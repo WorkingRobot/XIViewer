@@ -3296,6 +3296,12 @@ impl Buffers {
         self.cutoff
     }
 
+    /// The depth the frame's own geometry left, for a pass that samples it back while drawing
+    /// through the framebuffer standing on the copy.
+    pub fn depth(&self) -> Option<glow::Texture> {
+        self.depth
+    }
+
     /// The live frame the composite resolved into, standing on the depth itself: sun, moon and an
     /// effect's own glow all draw here, since none of them sample it back.
     pub fn lit(&self) -> Option<glow::Framebuffer> {

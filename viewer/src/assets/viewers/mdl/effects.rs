@@ -269,8 +269,8 @@ impl Effects {
                             },
                             batches,
                             packages: self.shaders.resolved(),
-                            // Drawn after the character has been composited, which leaves no depth
-                            // to test against and nothing to copy for the soft-particle variant.
+                            // Filled in by whoever draws these: the scene pass stands them on the
+                            // depth its own geometry left, and the standalone preview has none.
                             tested: false,
                             depth: None,
                         },

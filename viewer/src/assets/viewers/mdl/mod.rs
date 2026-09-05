@@ -2569,6 +2569,15 @@ impl Rendered {
             joints: pose.joints,
             debug: self.debug.get(),
             grid,
+            // The emote's own particles, drawn inside the frame rather than over the widget: only
+            // there is the depth the character settled still attached to be tested against.
+            effects: std::sync::Mutex::new(self.effects.borrow().frames(
+                &self.fired.borrow(),
+                view,
+                projection,
+                (rect.width(), rect.height()),
+                eye,
+            )),
         };
 
         // Drawn with no depth test, which is what makes it an overlay rather than a rig buried in
@@ -2597,25 +2606,6 @@ impl Rendered {
             })),
         });
 
-        // The emote's own particles, over the frame the character was composited into: one callback
-        // per file, since a draw is that file's own programs and geometry.
-        for (particles, frame) in self.effects.borrow().frames(
-            &self.fired.borrow(),
-            view,
-            projection,
-            (rect.width(), rect.height()),
-            eye,
-        ) {
-            ui.painter().add(egui::PaintCallback {
-                rect,
-                callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
-                    particles
-                        .lock()
-                        .unwrap()
-                        .draw(painter.gl(), painter, &frame);
-                })),
-            });
-        }
     }
 
     /// How much of what the model needs has landed, against how much it asked for. A material names

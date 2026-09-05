@@ -16,6 +16,7 @@ use glow::HasContext;
 use super::deferred::{self, Layered, Linked, TARGETS, TYPES, build_pair, dwords, sampler};
 use super::grid::{Grid, Ground};
 use super::material::Family;
+use super::super::avfx;
 use super::{Table, Vertex, program};
 
 pub use super::deferred::{
@@ -228,6 +229,10 @@ pub struct Frame {
     pub debug: Debug,
     /// The floor to rule under the model, where the viewer asks for one.
     pub grid: Option<Ground>,
+    /// The emote's own particles, drawn into the frame the composite resolved so the character
+    /// occludes them and the chain past it spreads their glow. Taken by the pass that draws them,
+    /// which is what fills in the depth and the size only the buffers know.
+    pub effects: Mutex<Vec<(Arc<Mutex<avfx::gpu::Particles>>, avfx::gpu::Frame)>>,
 }
 
 /// Geometry waiting for a context to upload it under.
@@ -598,6 +603,16 @@ impl Model {
         }
 
         self.ground(gl, painter, frame, info);
+        // This path draws straight into the buffer egui bound, so the depth the model just left is
+        // what a glow is tested against. Nothing there can be sampled back, which leaves the
+        // soft-particle variant its unbound sampler.
+        let held = info.viewport_in_pixels();
+        let size = (held.width_px.max(1), held.height_px.max(1));
+        for (particles, effect) in frame.effects.lock().unwrap().iter_mut() {
+            effect.tested = true;
+            effect.scene.size = (size.0 as f32, size.1 as f32);
+            particles.lock().unwrap().draw(gl, painter, effect);
+        }
     }
 
     /// The floor, over the model and against the depth whichever path drew it left behind. Both
@@ -848,6 +863,46 @@ impl Game {
         }
     }
 
+    /// The emote's own particles, over the frame the composite resolved.
+    ///
+    /// Drawn through the framebuffer standing on the copy of the depth, which leaves the live one
+    /// free to be sampled: a glow is tested against the depth the character settled, and the
+    /// soft-particle variant reads that same depth back.
+    fn particles(
+        &self,
+        gl: &glow::Context,
+        painter: &egui_glow::Painter,
+        frame: &Frame,
+        buffers: &deferred::Buffers,
+        size: (i32, i32),
+    ) -> Result<(), String> {
+        let mut held = frame.effects.lock().unwrap();
+        let (Some(into), Some(depth)) = (buffers.bare(), buffers.depth()) else {
+            return Ok(());
+        };
+        if held.is_empty() {
+            return Ok(());
+        }
+        buffers.cut(gl)?;
+        unsafe {
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(into));
+            gl.viewport(0, 0, size.0, size.1);
+        }
+        for (particles, effect) in held.iter_mut() {
+            effect.tested = true;
+            effect.depth = Some(depth);
+            effect.scene.size = (size.0 as f32, size.1 as f32);
+            particles.lock().unwrap().draw(gl, painter, effect);
+        }
+        unsafe {
+            gl.depth_func(glow::LESS);
+            gl.depth_mask(true);
+            gl.disable(glow::BLEND);
+            gl.disable(glow::DEPTH_TEST);
+        }
+        Ok(())
+    }
+
     fn render(
         &mut self,
         gl: &glow::Context,
@@ -907,6 +962,10 @@ impl Game {
             if let Some(reflection) = frame.reflection.as_ref() {
                 buffers.mirror(gl, reflection, &scene)?;
             }
+            // Over the composite and before the chain that spreads the bright end of it, which is
+            // where the game draws them: a glow behind the character is hidden by it, and one in
+            // front blooms with everything else.
+            self.particles(gl, painter, frame, buffers, size)?;
             if let Some(glare) = frame.glare.as_ref() {
                 buffers.source(gl)?;
                 buffers.glare(gl, glare, &scene)?;
