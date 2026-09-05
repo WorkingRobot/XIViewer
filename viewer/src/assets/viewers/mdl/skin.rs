@@ -48,6 +48,9 @@ const ANCHOR: &str = "n_hara";
 /// The pair of bones the creator's bust slider scales, which are leaves of the body's own skeleton.
 const BUST: [&str; 2] = ["j_mune_l", "j_mune_r"];
 
+/// The pair the eye-size table scales, left then right. Nothing else ever moves them.
+const EYES: [&str; 2] = ["j_f_noanim_eyesize_l", "j_f_noanim_eyesize_r"];
+
 /// The bones a visor hinges on, each turned about its own Z by one of the three angles the
 /// gimmick states for the set. A head that names none of them raises nothing.
 const VISOR: [&str; 3] = ["j_ex_met_va", "j_ex_met_vb", "j_ex_met_vc"];
@@ -975,6 +978,8 @@ pub struct Animation {
     poses: RefCell<Poses>,
     /// What the bust bones are scaled by, three axes in their own frame.
     bust: Cell<Vec3>,
+    /// What each of the two eye-size bones is scaled by, left then right.
+    eyes: Cell<[f32; 2]>,
     /// How far a raised visor has turned, one angle per bone it hinges on.
     visor: Cell<[f32; 3]>,
     running: Cell<bool>,
@@ -1033,6 +1038,7 @@ impl Animation {
             pending: RefCell::new(None),
             poses: Default::default(),
             bust: Cell::new(Vec3::ONE),
+            eyes: Cell::new([1.0; 2]),
             visor: Cell::new([0.0; 3]),
             running: Cell::new(true),
             mounted: mount.map(|mount| Box::new(Animation::new(filed_under(&mount, &models)))),
@@ -1338,6 +1344,10 @@ impl Animation {
 
     /// What the bust bones are scaled by, which `human.cmp` states as a pair of bounds a slider
     /// runs between.
+    pub fn eyed(&self, eyes: [f32; 2]) {
+        self.eyes.set(eyes);
+    }
+
     pub fn shaped(&self, bust: Vec3) {
         self.bust.set(bust);
     }
@@ -1807,6 +1817,15 @@ impl Animation {
         if bust != Vec3::ONE {
             for bone in BUST.iter().filter_map(|name| skin.named.get(*name)) {
                 posed[*bone] = posed[*bone].scaled(bust);
+            }
+        }
+        // No clip touches either of these - `noanim` is in both their names - so the table that
+        // states them is the only thing that ever moves them off the size the skeleton rests at.
+        for (scale, name) in self.eyes.get().into_iter().zip(EYES) {
+            if scale != 1.0
+                && let Some(bone) = skin.named.get(name)
+            {
+                posed[*bone] = posed[*bone].scaled(Vec3::splat(scale));
             }
         }
         let (center, spread) = middle(&posed, skin.anchor);

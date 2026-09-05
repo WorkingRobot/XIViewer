@@ -8,6 +8,7 @@
 //! What each set is offered under comes from the creator's own menus, in [`menus`].
 
 mod emotes;
+mod eyes;
 mod gating;
 mod menus;
 mod mounts;
@@ -371,6 +372,9 @@ pub struct CharacterBuilder {
     /// against the code it was fetched for so a change of race asks again.
     atch: Option<(u16, Rc<Vec<u8>>)>,
     reading_atch: Option<TrackedPromise<Result<AtchRead>>>,
+    /// The eye-size table, which is one file for every body the game ships.
+    facial: Option<Rc<Vec<u8>>>,
+    reading_facial: Option<TrackedPromise<Result<Vec<u8>>>>,
     /// The models each set is worn as under the current code, by slot. A set number means one
     /// thing as equipment and another as an adornment, so the two are kept apart. The picker asks
     /// about every set it lists, and a directory listing is too dear to pay for one on every frame.
@@ -478,6 +482,8 @@ impl Default for CharacterBuilder {
             logged: Cell::new((false, None, None, false)),
             atch: None,
             reading_atch: None,
+            facial: None,
+            reading_facial: None,
             sets: RefCell::new(BTreeMap::new()),
             worn: Vec::new(),
             worn_stains: Vec::new(),
@@ -537,6 +543,8 @@ impl CharacterBuilder {
         self.glowed.take();
         self.atch = None;
         self.reading_atch = None;
+        self.facial = None;
+        self.reading_facial = None;
         self.stood = false;
         self.body.clear();
         self.faces.clear();
@@ -798,6 +806,22 @@ impl CharacterBuilder {
         // Checked every frame rather than folded into `!self.stood`: the code it settles on can
         // change more than once before that flag next goes false, and a fetch spawned for a code
         // already left behind must not be mistaken for the one now on screen.
+        if let Some(promise) = self.reading_facial.take() {
+            match promise.try_take() {
+                Ok(Ok(bytes)) => {
+                    log::info!("character: the eye-size table landed, {} bytes", bytes.len());
+                    self.facial = Some(Rc::new(bytes));
+                }
+                Ok(Err(why)) => log::warn!("character: no eye sizes to read: {why}"),
+                Err(promise) => self.reading_facial = Some(promise),
+            }
+        }
+        if self.facial.is_none() && self.reading_facial.is_none() {
+            let files = backend.files().clone();
+            let fetch = async move { anyhow::Ok(files.read(eyes::PATH).await?) };
+            self.reading_facial = Some(TrackedPromise::spawn_local(fetch));
+        }
+
         let stale = self.atch.as_ref().is_none_or(|(held, _)| *held != self.code);
         if self.reading_atch.is_none() && stale {
             let files = backend.files().clone();
@@ -959,6 +983,15 @@ impl CharacterBuilder {
             let (customize, hidden, shapes, stature, bust) = self.made();
             model.made(customize, hidden, shapes, stature, bust);
             model.hinged(self.raised());
+            // Neither eye bone is animated by anything, so the table is the whole of what sizes
+            // them; a body, face or eye shape it says nothing about leaves them at rest.
+            let shape = self.choices.get(&eyes::EYE_SHAPE).copied().unwrap_or_default();
+            model.eyed(
+                self.facial
+                    .as_ref()
+                    .and_then(|held| eyes::scales(held, self.code, self.face, shape as u16))
+                    .unwrap_or([1.0; 2]),
+            );
             model.seated(self.mount_seat);
             model.dye(self.dye_templates.clone(), self.worn_stains.clone());
             // A weapon does not reach its back until the motion putting it there has run: the

@@ -3465,6 +3465,11 @@ impl Rendered {
         self.animation.acting()
     }
 
+    /// What each eye-size bone is scaled by, which no clip ever states.
+    pub fn eyed(&self, eyes: [f32; 2]) {
+        self.animation.eyed(eyes);
+    }
+
     /// Puts an expression on the character's face, which is what picking an emote that only makes
     /// one is.
     pub fn express(&self, name: &str) {
