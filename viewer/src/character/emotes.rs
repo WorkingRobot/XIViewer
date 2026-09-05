@@ -25,10 +25,14 @@ const NAME: u32 = 0;
 const ICON: u32 = 4;
 const STANDING: u32 = 16;
 const START: u32 = 18;
-/// The slots a body whose lower half is already committed reads: sat on a chair, sat on the
-/// ground, and the partial a rider plays.
-const CHAIR: u32 = 20;
-const GROUND: u32 = 22;
+/// The slots a body whose lower half is already committed reads: sat on the ground, sat on a
+/// chair, and the partial a rider plays.
+///
+/// `Priority` is what says which is which, not the order. `emote/jmn` sits a body on the ground at
+/// priority 8 and every `j_` variant is filed at 8 beside it; `emote/sit` sits it in a chair at 9
+/// and every `s_` variant is filed at 9. So `j_` is the ground - `jimen` - and `s_` is the chair.
+const GROUND: u32 = 20;
+const CHAIR: u32 = 22;
 const MOUNTED: u32 = 24;
 const KEY: u32 = 0;
 
@@ -36,6 +40,10 @@ const KEY: u32 = 0;
 /// emote's own name keeps this off whichever language the sheet was read in.
 const CHAIR_START: &str = "_chair_start";
 const GROUND_START: &str = "_ground_start";
+
+/// How an alternate names the motion that plays it in and the one it then holds.
+const LEADS_IN: &str = "_start";
+const HOLDS: &str = "_loop";
 
 /// What a body's lower half is committed to, which decides both the pose it holds and which of an
 /// emote's own slots it plays. A rider is not one of these: a mount states its own seat.
@@ -112,33 +120,58 @@ impl Emote {
     }
 }
 
-/// The poses `/cpose` cycles a seat through: the one the body settles into as it sits down, which
-/// the emote that sits it down states, followed by the alternates the sheet numbers.
+/// One pose a posture rests in: the motion that leads into it, where the sheet names one, and the
+/// pose it settles into. A body on its feet settles into the idle its own weapons state names,
+/// which is no pack of its own, so both are None for that one.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct Pose {
+    pub start: Option<String>,
+    pub settle: Option<String>,
+}
+
+/// The poses `/cpose` steps a posture through: the one it rests in, then the alternates the sheet
+/// numbers.
 #[derive(Default, Clone)]
 pub struct Poses {
-    chair: Vec<String>,
-    ground: Vec<String>,
+    standing: Vec<Pose>,
+    chair: Vec<Pose>,
+    ground: Vec<Pose>,
 }
 
 impl Poses {
-    pub fn of(&self, at: Posture) -> &[String] {
+    pub fn of(&self, at: Posture) -> &[Pose] {
         match at {
-            Posture::Standing => &[],
+            Posture::Standing => &self.standing,
             Posture::Chair => &self.chair,
             Posture::Ground => &self.ground,
         }
     }
 }
 
-/// The keys one seat's alternates are filed under, in the order they number themselves.
-fn cycled(keys: &HashSet<String>, prefix: &str) -> Vec<String> {
+/// The alternates one posture cycles, in the order they number themselves. An alternate numbers
+/// itself and stops there: `pose01_center_loop` carries more than a number and is something else.
+fn cycled(keys: &HashSet<String>, prefix: &str) -> Vec<Pose> {
+    let numbered = |key: &String, tail: &str| {
+        key.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_suffix(tail))
+            .is_some_and(|held| held.len() == 2 && held.bytes().all(|byte| byte.is_ascii_digit()))
+    };
     let mut found: Vec<String> = keys
         .iter()
-        .filter(|key| key.starts_with(prefix) && key.ends_with("_loop"))
+        .filter(|key| numbered(key, HOLDS))
         .cloned()
         .collect();
     found.sort();
     found
+        .into_iter()
+        .map(|settle| {
+            let start = format!("{}{LEADS_IN}", settle.strip_suffix(HOLDS).unwrap_or(&settle));
+            Pose {
+                start: keys.contains(&start).then_some(start),
+                settle: Some(settle),
+            }
+        })
+        .collect()
 }
 
 /// Every emote the game both names and animates, in name order, and the poses each seat cycles.
@@ -190,20 +223,30 @@ pub async fn read(backend: &Backend, language: Language) -> Result<(Vec<Emote>, 
     // The pose a seat settles into is the one its own sitting emote holds; the motion that emote
     // starts with is what says which seat it is, in whatever language the sheet was read in.
     let mut poses = Poses::default();
+    // A body on its feet rests in whatever its weapons state names, which no pack here holds.
+    poses.standing.push(Pose::default());
     for held in &found {
-        let (Some(start), Some(pose)) = (held.start.as_deref(), held.standing.clone()) else {
+        let (Some(start), Some(settle)) = (held.start.clone(), held.standing.clone()) else {
             continue;
         };
-        match (start.ends_with(CHAIR_START), start.ends_with(GROUND_START)) {
-            (true, _) if poses.chair.is_empty() => poses.chair.push(pose),
-            (_, true) if poses.ground.is_empty() => poses.ground.push(pose),
-            _ => {}
+        let seat = match (start.ends_with(CHAIR_START), start.ends_with(GROUND_START)) {
+            (true, _) => &mut poses.chair,
+            (_, true) => &mut poses.ground,
+            _ => continue,
+        };
+        if seat.is_empty() {
+            seat.push(Pose {
+                start: Some(start),
+                settle: Some(settle),
+            });
         }
     }
-    poses.chair.extend(cycled(&keys, "emote/j_pose"));
-    poses.ground.extend(cycled(&keys, "emote/s_pose"));
+    poses.standing.extend(cycled(&keys, "emote/pose"));
+    poses.chair.extend(cycled(&keys, "emote/s_pose"));
+    poses.ground.extend(cycled(&keys, "emote/j_pose"));
     log::info!(
-        "character: {} poses to sit in and {} to sit on the ground in",
+        "character: {} poses standing, {} sitting, {} on the ground",
+        poses.standing.len(),
         poses.chair.len(),
         poses.ground.len()
     );
@@ -280,11 +323,11 @@ mod tests {
     #[test]
     fn a_seat_reads_only_its_own_slot() {
         let mut clap = emote(Some("emote/clap"), None);
-        clap.chair = Some("emote/j_clap".to_owned());
-        clap.ground = Some("emote/s_clap".to_owned());
+        clap.chair = Some("emote/s_clap".to_owned());
+        clap.ground = Some("emote/j_clap".to_owned());
         assert_eq!(clap.seated(Posture::Standing), None);
-        assert_eq!(clap.seated(Posture::Chair), Some("emote/j_clap"));
-        assert_eq!(clap.seated(Posture::Ground), Some("emote/s_clap"));
+        assert_eq!(clap.seated(Posture::Chair), Some("emote/s_clap"));
+        assert_eq!(clap.seated(Posture::Ground), Some("emote/j_clap"));
 
         // 120-odd emotes name one seat and not the other, and an unnamed one is nothing to play.
         let sit_ups = emote(Some("emote/loop_emot09_loop"), None);
@@ -306,15 +349,37 @@ mod tests {
         .into_iter()
         .map(ToOwned::to_owned)
         .collect();
+        let held = cycled(&keys, "emote/j_pose");
+        let settles: Vec<&str> = held.iter().filter_map(|p| p.settle.as_deref()).collect();
         assert_eq!(
-            cycled(&keys, "emote/j_pose"),
+            settles,
             [
                 "emote/j_pose01_loop",
                 "emote/j_pose02_loop",
                 "emote/j_pose03_loop"
             ]
         );
-        assert_eq!(cycled(&keys, "emote/s_pose"), ["emote/s_pose01_loop"]);
+        // Only the second states a motion to lead in with, so the others go straight to the pose.
+        let starts: Vec<Option<&str>> = held.iter().map(|p| p.start.as_deref()).collect();
+        assert_eq!(starts, [None, Some("emote/j_pose02_start"), None]);
+        assert_eq!(cycled(&keys, "emote/s_pose").len(), 1);
+    }
+
+    /// `pose01_center_loop` numbers itself and then carries more, so it is not one of the poses
+    /// `/cpose` steps through.
+    #[test]
+    fn an_alternate_numbers_itself_and_stops() {
+        let keys: HashSet<String> = [
+            "emote/pose01_loop",
+            "emote/pose01_center_loop",
+            "emote/pose02_loop",
+        ]
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect();
+        let held = cycled(&keys, "emote/pose");
+        let settles: Vec<&str> = held.iter().filter_map(|p| p.settle.as_deref()).collect();
+        assert_eq!(settles, ["emote/pose01_loop", "emote/pose02_loop"]);
     }
 
     /// A pose held forever states the motion that plays it in apart from the pose itself, and the
