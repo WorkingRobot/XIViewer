@@ -4989,11 +4989,43 @@ fn flat(gl: &glow::Context, target: u32, value: &[u8; 4]) -> Result<glow::Textur
     }
 }
 
+/// How many texture units the fragment stage may read, asked for once. WebGL2 guarantees only 16
+/// where desktop GL usually offers 32, and the game's own character shaders read past that.
+static MAX_TEXTURE_UNITS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+fn max_texture_units(gl: &glow::Context) -> usize {
+    *MAX_TEXTURE_UNITS.get_or_init(|| unsafe {
+        gl.get_parameter_i32(glow::MAX_TEXTURE_IMAGE_UNITS).max(0) as usize
+    })
+}
+
+/// The samplers a fragment source declares, which is what the driver counts at link time. Counted
+/// off the source rather than the pair's resource list, since only one of the two stages is being
+/// weighed and a texture read through more than one sampler is declared once per sampler.
+fn fragment_samplers(source: &str) -> usize {
+    source
+        .lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            line.starts_with("uniform ") && line.contains("sampler")
+        })
+        .count()
+}
+
 pub fn build_pair(
     gl: &glow::Context,
     vertex: &str,
     fragment: &str,
 ) -> Result<glow::Program, String> {
+    // Answered before compiling rather than after linking: the driver's own message names the limit
+    // but not the shader, and a doomed pair costs a compile of both stages to find out.
+    let wanted = fragment_samplers(fragment);
+    let ceiling = max_texture_units(gl);
+    if ceiling > 0 && wanted > ceiling {
+        return Err(format!(
+            "the fragment shader reads {wanted} textures and this device offers {ceiling}"
+        ));
+    }
     unsafe {
         let program = gl.create_program()?;
         let mut built = Vec::new();
@@ -5043,6 +5075,15 @@ pub fn build_pair(
 
 #[cfg(test)]
 mod test {
+    /// Only the fragment stage is weighed, and a texture read through two samplers is declared
+    /// twice, so the count comes off the source rather than off the pair's resource list.
+    #[test]
+    fn a_fragment_source_states_how_many_textures_it_reads() {
+        let source = "#version 300 es\n             precision highp float;\n             uniform sampler2D g_SamplerNormal;\n             uniform highp sampler2D g_SamplerIndex;\n             uniform usampler2D g_SamplerTable;\n             uniform samplerCube g_SamplerEnv;\n             uniform vec4 g_Params[4];\n             // uniform sampler2D commented_out;\n             void main() {}\n";
+        assert_eq!(super::fragment_samplers(source), 4);
+        assert_eq!(super::fragment_samplers("void main() {}"), 0);
+    }
+
     use super::{BAND, ENGINE, SHEET, STAR_FACES, STAR_GRID, band, dome, sheet, strip};
 
     /// The id the file the shadow softening dithers by is bound under. Nothing in the table says
