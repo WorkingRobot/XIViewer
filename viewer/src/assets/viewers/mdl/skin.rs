@@ -413,10 +413,14 @@ impl Layer {
             true => Some(fade.unwrap_or_default()),
             false => fade,
         };
-        *self.leaving.borrow_mut() = match fade {
-            Some(0.0) => None,
-            _ => self.leaving_clip(),
-        };
+        // A change asked for while the last one is still being fetched has no clip of its own to
+        // hand over yet, and letting that clear what is already on its way out is what snapped the
+        // body back to its reference pose: keep the outgoing clip until something replaces it.
+        match (fade, self.leaving_clip()) {
+            (Some(0.0), _) => *self.leaving.borrow_mut() = None,
+            (_, Some(clip)) => *self.leaving.borrow_mut() = Some(clip),
+            (_, None) => {}
+        }
         self.fade.set(0.0);
         self.over.set(fade.unwrap_or_default());
         self.pricing.set(fade.is_none());
