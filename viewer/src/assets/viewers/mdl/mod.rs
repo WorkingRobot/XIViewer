@@ -2407,15 +2407,37 @@ impl Rendered {
                 .emote
                 .borrow()
                 .firing(time)
-                .filter_map(|vfx| {
-                    let bone = names.iter().position(|name| *name == vfx.bone)?;
-                    Some(effects::Fired {
-                        id: vfx.id,
-                        path: vfx.path.to_owned(),
-                        at: *pose.world.get(bone)? * vfx.local,
-                        since: vfx.since,
-                        tint: Vec4::from(vfx.tint),
-                    })
+                .flat_map(|vfx| {
+                    let place = |bone: &str| {
+                        let at = names.iter().position(|name| *name == bone)?;
+                        Some(*pose.world.get(at)? * vfx.local)
+                    };
+                    // A file states its own bind points and the client hangs one instance off
+                    // each. Only the ids a capture has pinned are answered, and a bone this rig
+                    // cannot name answers nothing, so either way what is left is where the command
+                    // bound it rather than nothing at all.
+                    let bound: Vec<Mat4> = self
+                        .effects
+                        .borrow()
+                        .bound(vfx.path)
+                        .iter()
+                        .filter_map(|bone| place(bone))
+                        .collect();
+                    let placed = match bound.is_empty() {
+                        true => place(vfx.bone).into_iter().collect(),
+                        false => bound,
+                    };
+                    placed
+                        .into_iter()
+                        .enumerate()
+                        .map(|(at, world)| effects::Fired {
+                            id: vfx.id | (at as u64) << 16,
+                            path: vfx.path.to_owned(),
+                            at: world,
+                            since: vfx.since,
+                            tint: Vec4::from(vfx.tint),
+                        })
+                        .collect::<Vec<_>>()
                 })
                 .collect(),
             _ => Vec::new(),

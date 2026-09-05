@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use glam::{Mat4, Vec3, Vec4};
 use ironworks::file::File as _;
-use ironworks::file::avfx::Avfx;
+use ironworks::file::avfx::{Avfx, Block};
 
 use super::super::avfx::{self, Shaders, Textures, gpu, program, sim};
 use crate::backend::Backend;
@@ -43,6 +43,51 @@ enum File {
 struct Held {
     effect: sim::Effect,
     particles: Arc<Mutex<gpu::Particles>>,
+    /// The bone each of the file's own binders hangs it from, for the binders whose id a capture
+    /// has actually pinned. Empty where none of them are known, which is most files.
+    bound: Vec<&'static str>,
+}
+
+/// Where a binder's own id hangs its effect. A file states a numeric id per binder and the client
+/// resolves it against a list of attachments the character carries, keyed by id rather than
+/// indexed; nothing here reads that list, so only the ids a game capture has placed are answered.
+///
+/// 77 and 78 are the two hands, off the Cheer On: Blue capture, which is what puts a light in each.
+/// 43 and 44 are the two eyes, off the Frighten capture: that file holds one emitter and two
+/// binders, so its two glows are its two bind points and nothing else.
+fn bound(id: i32) -> Option<&'static str> {
+    match id {
+        43 => Some("j_f_eye_l"),
+        44 => Some("j_f_eye_r"),
+        77 => Some("n_buki_r"),
+        78 => Some("n_buki_l"),
+        _ => None,
+    }
+}
+
+/// A binder states its bind point under `BPTP`/`BPID`, nested inside its own property tree.
+fn binders(file: &Avfx) -> Vec<&'static str> {
+    fn dig(block: &Block, name: &str, into: &mut Vec<i32>) {
+        if block.name().as_str() == name
+            && let Some(value) = block.i32()
+        {
+            into.push(value);
+        }
+        for held in block.blocks() {
+            dig(held, name, into);
+        }
+    }
+    file.binders()
+        .iter()
+        .filter_map(|binder| {
+            let (mut kind, mut id) = (Vec::new(), Vec::new());
+            dig(binder, "BPTP", &mut kind);
+            dig(binder, "BPID", &mut id);
+            // Kind 3 is the one that hangs off the character; 0 states no attachment at all.
+            (kind.first() == Some(&3)).then_some(())?;
+            bound(*id.first()?)
+        })
+        .collect()
 }
 
 /// A file on its way in or in hand, with the last poll it was fired on.
@@ -64,6 +109,15 @@ pub struct Effects {
 }
 
 impl Effects {
+    /// The bones the file at `path` hangs itself from, where its own binders name any this knows.
+    /// Empty until the file has landed, and for every file whose ids are unpinned.
+    pub fn bound(&self, path: &str) -> &[&'static str] {
+        match self.files.get(path).map(|kept| &kept.file) {
+            Some(File::Ready(held)) => &held.bound,
+            _ => &[],
+        }
+    }
+
     /// Takes up whatever is firing this frame: asks for any file not in hand, steps each firing to
     /// where its own clock has reached, and forgets the ones no longer named.
     pub fn poll(&mut self, ctx: &egui::Context, backend: &Backend, fired: &[Fired]) {
@@ -124,6 +178,7 @@ impl Effects {
                     let models = std::mem::take(&mut effect.models);
                     log::info!("assets/mdl: the emote fires {path}, {} frames", effect.length);
                     File::Ready(Box::new(Held {
+                        bound: binders(&read),
                         effect,
                         particles: gpu::Particles::new(models),
                     }))
@@ -223,5 +278,23 @@ impl Effects {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Only the ids two captures have actually placed are answered; everything else is left where
+    /// the command bound it rather than guessed at.
+    #[test]
+    fn only_a_pinned_bind_point_names_a_bone() {
+        assert_eq!(super::bound(77), Some("n_buki_r"));
+        assert_eq!(super::bound(78), Some("n_buki_l"));
+        assert_eq!(super::bound(43), Some("j_f_eye_l"));
+        assert_eq!(super::bound(44), Some("j_f_eye_r"));
+        // The corpus carries 5, 8-11, 16, 25-30, 32, 33, 42, 107 and 108 besides, and no capture
+        // places any of them.
+        for id in [0, 5, 16, 30, 42, 107, 108] {
+            assert_eq!(super::bound(id), None, "{id} is not pinned by anything");
+        }
     }
 }
