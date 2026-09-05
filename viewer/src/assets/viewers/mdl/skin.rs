@@ -1461,6 +1461,12 @@ impl Animation {
         self.body.playing().map(|(_, name, _)| name)
     }
 
+    /// The motion laid over the body right now, by the name its own pack gives it. Drawing and
+    /// sheathing a weapon are what put one there.
+    pub fn acting(&self) -> Option<String> {
+        self.action.playing().map(|(_, name, _)| name)
+    }
+
     /// Lays `motion` over whatever the body is doing for as long as it runs, out of the first of
     /// `packs` that holds it, fading in and back out over `fade` seconds. A partial motion names
     /// only the bones it moves, so the base keeps every other one for the whole of it.

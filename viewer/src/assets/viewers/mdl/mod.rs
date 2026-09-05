@@ -3438,6 +3438,11 @@ impl Rendered {
         self.animation.standing()
     }
 
+    /// The motion laid over the pose the character is standing in, where one is still running.
+    pub fn acting(&self) -> Option<String> {
+        self.animation.acting()
+    }
+
     /// Puts an expression on the character's face, which is what picking an emote that only makes
     /// one is.
     pub fn express(&self, name: &str) {

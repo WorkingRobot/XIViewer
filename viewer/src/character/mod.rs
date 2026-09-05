@@ -961,7 +961,11 @@ impl CharacterBuilder {
             model.hinged(self.raised());
             model.seated(self.mount_seat);
             model.dye(self.dye_templates.clone(), self.worn_stains.clone());
-            let carried = self.attachments();
+            // A weapon does not reach its back until the motion putting it there has run: the
+            // pack states no command to move it, so what keeps it in hand is that motion still
+            // playing. Drawing is the other way round, and takes it in hand at once.
+            let sheathing = model.acting().is_some_and(|name| name == stance::SHEATHE);
+            let carried = self.attachments(self.drawn || sheathing);
             model.glowing(self.effects(&carried));
             model.carried(carried);
             if let Some(stance) = self.stance.clone() {
@@ -1094,7 +1098,7 @@ impl CharacterBuilder {
     /// Where each wielded weapon hangs this frame: the model it is worn as, the bone it hangs from
     /// and its own placement relative to that bone. Falls back to the plain hand null bone at no
     /// offset where the race's `.atch` file has not landed yet or names this weapon's job nothing.
-    fn attachments(&self) -> Vec<(String, String, Mat4)> {
+    fn attachments(&self, drawn: bool) -> Vec<(String, String, Mat4)> {
         let mut found = Vec::new();
         if let Some(main) = self.main_hand.and_then(|at| self.weapons_main.get(at)) {
             let atch = self
@@ -1105,11 +1109,11 @@ impl CharacterBuilder {
             // Logged once a stance, a wielded weapon or whether the atch file has landed actually
             // changes, rather than every frame the pose is recomputed: this is the bone and offset
             // a stance change moves a weapon to.
-            let key = (self.drawn, self.main_hand, self.off_hand, atch.is_some());
+            let key = (drawn, self.main_hand, self.off_hand, atch.is_some());
             let log = self.logged.get() != key;
             self.logged.set(key);
             let tag = |weapon: &weapons::Weapon| weapons::tag(&self.weapon_tags, weapon.set);
-            found.push(self.attach(main.weapon.model(), tag(&main.weapon), true, self.drawn, atch, log));
+            found.push(self.attach(main.weapon.model(), tag(&main.weapon), true, drawn, atch, log));
             let off = match main.covers_off_hand {
                 true => main.off_hand,
                 false => self
@@ -1118,7 +1122,7 @@ impl CharacterBuilder {
                     .map(|piece| piece.weapon),
             };
             if let Some(weapon) = off {
-                found.push(self.attach(weapon.model(), tag(&weapon), false, self.drawn, atch, log));
+                found.push(self.attach(weapon.model(), tag(&weapon), false, drawn, atch, log));
             }
         }
         // An emote's own prop hangs off the point its model set names, the same table a weapon
@@ -2077,15 +2081,14 @@ impl CharacterBuilder {
             "character_emotes",
             &matched,
             self.emote,
-            |index| {
-                let emote = &self.emotes[index];
-                (emote.name.as_str(), emote.icon)
-            },
             // A rider can only play what the sheet names a partial for, since the mount holds its
             // lower half; an emote that is nothing but a face is always its own to make.
             |index| {
                 let emote = &self.emotes[index];
-                self.mount.is_none() || emote.mounted().is_some() || emote.expression().is_some()
+                let playable = self.mount.is_none()
+                    || emote.mounted().is_some()
+                    || emote.expression().is_some();
+                (emote.name.as_str(), emote.icon, playable)
             },
         )
         .map(Pick::Emote)
@@ -2123,9 +2126,8 @@ impl CharacterBuilder {
             self.mount,
             |index| {
                 let mount = &self.mounts[index];
-                (mount.name.as_str(), mount.icon)
+                (mount.name.as_str(), mount.icon, true)
             },
-            |_| true,
         )
         .map(|index| Pick::Mount((self.mount != Some(index)).then_some(index)));
         if picked.is_none()
@@ -2280,9 +2282,8 @@ impl CharacterBuilder {
                 self.main_hand,
                 |index| {
                     let piece = &self.weapons_main[index];
-                    (piece.name.as_str(), piece.icon)
+                    (piece.name.as_str(), piece.icon, true)
                 },
-                |_| true,
             ) {
                 picked = Some(Pick::Weapon((self.main_hand != Some(index)).then_some(index)));
             }
@@ -2311,9 +2312,8 @@ impl CharacterBuilder {
                 self.off_hand,
                 |index| {
                     let piece = &self.weapons_off[index];
-                    (piece.name.as_str(), piece.icon)
+                    (piece.name.as_str(), piece.icon, true)
                 },
-                |_| true,
             ) {
                 picked = Some(Pick::OffHand((self.off_hand != Some(index)).then_some(index)));
             }
@@ -2963,7 +2963,8 @@ pub(super) fn held(sets: &[Set], wanted: u16) -> Vec<String> {
 }
 
 /// A searched list to pick one row of, each drawn with the icon the game offers it under. The rows
-/// are the indices a search left, and what comes back is the one clicked.
+/// are the indices a search left, and what comes back is the one clicked. A row states its own
+/// name, icon and whether it can be taken at all, which is what grays out the rest.
 fn listed<'a>(
     ui: &mut egui::Ui,
     backend: &Backend,
@@ -2971,8 +2972,7 @@ fn listed<'a>(
     id: &str,
     rows: &[usize],
     chosen: Option<usize>,
-    held: impl Fn(usize) -> (&'a str, u32),
-    playable: impl Fn(usize) -> bool,
+    held: impl Fn(usize) -> (&'a str, u32, bool),
 ) -> Option<usize> {
     let mut picked = None;
     let step = PIECE + 2.0 * ui.spacing().button_padding.y + ui.spacing().item_spacing.y;
@@ -2982,7 +2982,7 @@ fn listed<'a>(
         .show_rows(ui, step, rows.len(), |ui, drawn| {
             for row in drawn {
                 let index = rows[row];
-                let (name, icon) = held(index);
+                let (name, icon, playable) = held(index);
                 let path = get_icon_path(backend.icons(), icon, false, Language::None);
                 let excel = backend.excel().clone();
                 let source = icons.get_or_insert_icon(&path, ui.ctx(), || {
@@ -3004,7 +3004,7 @@ fn listed<'a>(
                     _ => egui::Button::new(name),
                 };
                 let response = ui.add_enabled(
-                    playable(index),
+                    playable,
                     button
                         .truncate()
                         .selected(chosen == Some(index))
