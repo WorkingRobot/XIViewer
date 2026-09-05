@@ -17,7 +17,22 @@ static SERVICE_DIRECTORY: LazyLock<PathBuf> = LazyLock::new(|| {
         .join("static")
 });
 
-const CLIENT_ROUTES: &[&str] = &["sheet", "assets", "music", "auth"];
+/// Every first segment the client routes itself, which is what tells a deep link with a dot in it
+/// from a missing file. A zone is named by its own `.lvb` and an asset by its own extension, so a
+/// tab left out of this list answers its own reloads with a 404.
+///
+/// These are the routes `App::build` registers, less the sheet listing, which the client takes as
+/// its default. **A new tab has to be added here too.**
+const CLIENT_ROUTES: &[&str] = &[
+    "assets",
+    "auth",
+    "character",
+    "icons",
+    "music",
+    "quests",
+    "sheet",
+    "zones",
+];
 
 fn routed_by_client(path: &str) -> bool {
     let segment = path.trim_start_matches('/').split('/').next();
@@ -51,6 +66,12 @@ mod tests {
             "sheet/Item.foo",
             "music/1",
             "auth/github/callback",
+            // A zone is named by the `.lvb` it stands in, so every reload of one carries a dot.
+            "zones/bg/ffxiv/wil_w1/dun/w1d6/level/w1d6.lvb",
+            "/zones/bg/ex1/01_roc_r2/dun/r2d1/level/r2d1.lvb",
+            "quests/1234",
+            "character",
+            "icons/60042",
         ] {
             assert!(routed_by_client(path), "{path}");
         }
