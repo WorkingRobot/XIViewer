@@ -367,6 +367,10 @@ struct Leaving {
     pack: Rc<Motions>,
     motion: usize,
     time: f32,
+    /// Whether the clip left off by playing through rather than by being cut short. One that ran
+    /// out holds its last frame under the fade; one interrupted mid-clip is still running and
+    /// wraps.
+    spent: bool,
 }
 
 /// One motion playing on the rig: the pack it comes from, which of that pack's motions, and how
@@ -490,6 +494,7 @@ impl Layer {
             pack: Rc::clone(pack.as_ref().and_then(Fetch::ready)?),
             motion: self.motion.get()?,
             time: self.time.get(),
+            spent: false,
         })
     }
 
@@ -658,7 +663,15 @@ impl Layer {
             // both threw the outgoing clip away and opened the incoming one to full weight before
             // its pack had landed, so the body stood in its reference pose for a frame and then
             // snapped into the loop.
-            (Some(then), _) => self.load(&then, None, None, None),
+            (Some(then), _) => {
+                self.load(&then, None, None, None);
+                // This clip ran out rather than being cut short, so it holds where it ended: a
+                // start motion that wrapped back to its own first frame is a pose nothing asked
+                // for, blended into the loop it was meant to hand over to.
+                if let Some(held) = self.leaving.borrow_mut().as_mut() {
+                    held.spent = true;
+                }
+            }
             (None, true) => self.load("", None, None, Some(settle)),
             (None, false) => self.time.set(time - duration),
         }
@@ -690,7 +703,7 @@ impl Layer {
             // A clip being cross-faded out of is still running, so it wraps; one the layer is
             // leaving with nothing behind it holds its last frame rather than starting over
             // under the fade.
-            held.time = match self.wanted.borrow().is_empty() {
+            held.time = match held.spent || self.wanted.borrow().is_empty() {
                 true => (held.time + step).min(duration),
                 false => (held.time + step.min(duration)) % duration,
             };
@@ -2621,7 +2634,41 @@ mod tests {
             pack: empty_pack(),
             motion: 0,
             time: 0.0,
+            spent: false,
         });
+    }
+
+    /// A clip that ran out holds where it ended while it fades; one cut short mid-clip is still
+    /// running and wraps. Wrapping a start motion that had just played through put its own first
+    /// frame under the fade, which is a pose nothing asked for.
+    #[test]
+    fn a_clip_that_played_through_holds_its_last_frame() {
+        for spent in [true, false] {
+            let layer = Layer::default();
+            layer.motion.set(Some(0));
+            *layer.pack.borrow_mut() = Some(Fetch::Ready(empty_pack()));
+            layer.load("b.pap", None, None, Some(4.0));
+            // The incoming pack has landed, so the fade is open and the outgoing clock runs.
+            layer.motion.set(Some(0));
+            *layer.leaving.borrow_mut() = Some(Leaving {
+                path: "a.pap".to_owned(),
+                pack: empty_pack(),
+                motion: 0,
+                time: 1.0,
+                spent,
+            });
+            // The pack names no motion, so the clip runs for one epsilon: a spent one is clamped
+            // to exactly that, where a running one is taken round it and lands short.
+            layer.fading(0.25);
+            let time = layer.leaving.borrow().as_ref().map(|held| held.time);
+            match spent {
+                true => assert_eq!(time, Some(f32::EPSILON), "a spent clip is held at its end"),
+                false => assert!(
+                    time.is_some_and(|at| at < f32::EPSILON),
+                    "a running clip wraps round its own length"
+                ),
+            }
+        }
     }
 
     #[test]
