@@ -3067,6 +3067,8 @@ mod tests {
     fn a_real_facial_pose_composes_to_what_its_own_file_states() {
         use glam::Quat;
         use ironworks::Ironworks;
+
+        use crate::assets::viewers::skeleton::Laid;
         use ironworks::file::est::ExtraSkeletonTemplate;
         use ironworks::file::pap::AnimationPack;
         use ironworks::file::sklb::SkeletonBinary;
