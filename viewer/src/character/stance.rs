@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use ironworks::excel::Language;
 
+use crate::assets::viewers::wtd;
 use crate::backend::Backend;
 use crate::excel::provider::{ExcelProvider, ExcelSheet as _};
 
@@ -89,7 +90,7 @@ pub struct Stance {
 
 impl Stance {
     pub async fn read(backend: &Backend, language: Language) -> Result<Self> {
-        let classes = weapon_types(&backend.files().read(MOTION_TYPES).await?)
+        let classes = wtd::types(&backend.files().read(MOTION_TYPES).await?)
             .context("weapon motion types")?;
         let packs =
             Packs::read(&backend.files().read(PACK_TABLE).await?).context("pap load table")?;
@@ -138,7 +139,7 @@ impl Stance {
 
     /// The motion class a weapon model set is in. Nothing held is an empty hand.
     pub fn class(&self, set: Option<u16>) -> &str {
-        set.and_then(|set| code(&self.classes, set)).unwrap_or(EMPTY)
+        set.and_then(|set| wtd::code(&self.classes, set)).unwrap_or(EMPTY)
     }
 
     /// The directory a pair of weapons files its drawn packs under.
@@ -362,30 +363,6 @@ fn name(block: &[u8], at: usize) -> Option<String> {
     Some(std::str::from_utf8(&rest[..end]).ok()?.to_owned())
 }
 
-/// A weapon type table, which `motion.wtd` and `attach.wtd` are each one of: a four-byte header
-/// whose second half counts the entries, then one four-byte model set and one three-letter code
-/// packed into four bytes for each.
-pub(super) fn weapon_types(bytes: &[u8]) -> Option<Vec<(u32, String)>> {
-    let count = usize::from(u16::from_le_bytes(bytes.get(2..4)?.try_into().ok()?));
-    (0..count)
-        .map(|at| {
-            let entry = bytes.get(4 + at * 8..12 + at * 8)?;
-            let set = u32::from_le_bytes(entry[..4].try_into().ok()?);
-            let code = String::from_utf8(entry[4..7].iter().rev().copied().collect()).ok()?;
-            Some((set, code))
-        })
-        .collect()
-}
-
-/// The code a weapon model set reads out of one: the last entry at or below it, since the table
-/// states one set per run of them and the client clamps a lookup between two into the lower.
-pub(super) fn code(types: &[(u32, String)], set: u16) -> Option<&str> {
-    let at = types.partition_point(|(held, _)| *held <= u32::from(set));
-    types
-        .get(at.saturating_sub(1))
-        .map(|(_, code)| code.as_str())
-}
-
 #[cfg(test)]
 mod tests {
     use ironworks::Ironworks;
@@ -407,7 +384,7 @@ mod tests {
 
     fn stance(entries: &[(u32, &str)]) -> Stance {
         Stance {
-            classes: weapon_types(&table(entries)).expect("the table reads"),
+            classes: wtd::types(&table(entries)).expect("the table reads"),
             packs: Packs::read(&plt()).expect("the pack table reads"),
             groups: HashMap::new(),
             blends: HashMap::new(),

@@ -85,7 +85,7 @@ pub struct Piece {
 pub type Tags = Vec<(u32, String)>;
 
 /// The point a weapon model set hangs from, which the table states one of per run of sets.
-pub(super) use super::stance::code as tag;
+pub(super) use crate::assets::viewers::wtd::code as tag;
 
 /// Every weapon and shield the game names, split by which hand it is picked for, in one list per
 /// hand, and the table saying where each model set hangs.
@@ -95,7 +95,7 @@ pub type Pieces = (Vec<Piece>, Vec<Piece>, Tags);
 /// covers the off hand rather than filling it (a fist weapon's second knuckle) never lists
 /// anything for that hand: the item's own `off_hand` supplies it instead.
 pub async fn read(backend: &Backend, language: Language) -> Result<Pieces> {
-    let tags = super::stance::weapon_types(&backend.files().read(ATTACH_TYPES).await?)
+    let tags = crate::assets::viewers::wtd::types(&backend.files().read(ATTACH_TYPES).await?)
         .context("weapon attach types")?;
     let excel = backend.excel();
     let items = excel.get_sheet("Item", language).await?;
@@ -425,7 +425,7 @@ mod tests {
             ironworks::sqpack::Install::at_sqpack("/home/asriel/.xlcore/ffxiv/game/sqpack"),
         ));
         let bytes: Vec<u8> = install.file(ATTACH_TYPES).expect("the table");
-        let tags = super::super::stance::weapon_types(&bytes).expect("a readable table");
+        let tags = crate::assets::viewers::wtd::types(&bytes).expect("a readable table");
         assert_eq!(tag(&tags, 101), Some("sld"), "a shield");
         assert_eq!(tag(&tags, 201), Some("swd"), "a gladius");
         assert_eq!(tag(&tags, 1601), Some("clg"), "a fist weapon");

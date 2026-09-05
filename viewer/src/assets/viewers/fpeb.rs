@@ -1,4 +1,4 @@
-//! The eye size a face wears, out of `chara/xls/facial_param_edit/facial_param_edit.fpeb`.
+//! `.fpeb` facial parameter edits: the eye size a face wears.
 //!
 //! Nothing animates `j_f_noanim_eyesize_l` or `_r`: the name says so, and this table is the only
 //! thing that states them. The file is a FlatBuffers buffer, which is what the client's own loader
@@ -116,6 +116,104 @@ pub fn scales(bytes: &[u8], code: u16, face: u16, shape: u16) -> Option<[f32; 2]
         }
     }
     Some(found)
+}
+
+
+use anyhow::{Context, Result};
+use egui::RichText;
+
+use super::{Preview, facts, line, section, table};
+
+const COLUMNS: [(&str, usize); 5] = [
+    ("Body", 7),
+    ("Face", 6),
+    ("Eye shape", 11),
+    ("Bone", 22),
+    ("Scale", 0),
+];
+
+pub struct Rendered {
+    identity: Vec<(&'static str, String)>,
+    rows: Vec<(u32, u32, u32, &'static str, f32)>,
+}
+
+pub fn decode(path: &str, bytes: &[u8]) -> Result<Preview> {
+    let buf = Buf(bytes);
+    (bytes.get(4..8) == Some(b"FPEB")).then_some(()).context("a facial parameter edit")?;
+    let root = buf.table(0).context("a root table")?;
+    let mut rows = Vec::new();
+    for race in buf.vector(root, 2) {
+        let code = buf.number(race, 0);
+        for face in buf.vector(race, 2) {
+            let id = buf.number(face, 0);
+            for group in buf.vector(face, 2) {
+                for entry in buf.vector(group, 1) {
+                    let shape = buf.number(entry, 0);
+                    for param in buf.vector(entry, 1) {
+                        let named = buf.number(param, 0);
+                        let Some(at) = BONES.iter().position(|bone| hashed(bone) == named) else {
+                            continue;
+                        };
+                        let scale = buf
+                            .field(param, 3)
+                            .and_then(|at| buf.f32(at))
+                            .unwrap_or(1.0);
+                        rows.push((code, id, shape, BONES[at], scale));
+                    }
+                }
+            }
+        }
+    }
+    let bodies = {
+        let mut held: Vec<u32> = rows.iter().map(|(code, ..)| *code).collect();
+        held.sort_unstable();
+        held.dedup();
+        held.len()
+    };
+    let identity = vec![
+        ("Bodies", bodies.to_string()),
+        ("Parameters", rows.len().to_string()),
+        (
+            "Left alone",
+            rows.iter().filter(|(.., scale)| *scale == 1.0).count().to_string(),
+        ),
+    ];
+    log::info!("assets/fpeb: {path} {bodies} bodies, {} parameters", rows.len());
+    Ok(Preview::Fpeb(Box::new(Rendered { identity, rows })))
+}
+
+pub fn ui(ui: &mut egui::Ui, file: &Rendered) {
+    section(ui, "Eye size");
+    ui.label(
+        RichText::new(
+            "Nothing animates either bone, so this table is the whole of what sizes them. A body, \
+             face or eye shape it states nothing for leaves them at rest.",
+        )
+        .weak(),
+    );
+    ui.add_space(4.0);
+    table(ui, &COLUMNS, file.rows.len(), |ui, index| {
+        let (code, face, shape, bone, scale) = &file.rows[index];
+        ui.label(
+            RichText::new(line(
+                &COLUMNS,
+                [
+                    &format!("c{code:04}"),
+                    face.to_string().as_str(),
+                    shape.to_string().as_str(),
+                    bone,
+                    &format!("{scale:.3}"),
+                ],
+            ))
+            .monospace(),
+        );
+    });
+}
+
+impl Rendered {
+    pub fn details_ui(&self, ui: &mut egui::Ui) {
+        facts(ui, "fpeb_identity", &self.identity);
+    }
 }
 
 #[cfg(test)]

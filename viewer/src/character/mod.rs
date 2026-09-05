@@ -8,7 +8,6 @@
 //! What each set is offered under comes from the creator's own menus, in [`menus`].
 
 mod emotes;
-mod eyes;
 mod gating;
 mod menus;
 mod mounts;
@@ -32,7 +31,7 @@ use egui::{
 use glam::{Mat4, Vec3};
 use ironworks::excel::Language;
 
-use crate::assets::viewers::mdl;
+use crate::assets::viewers::{fpeb, mdl};
 use crate::backend::Backend;
 use crate::data::get_icon_path;
 use crate::data::listing::{Listed, Listing};
@@ -818,7 +817,7 @@ impl CharacterBuilder {
         }
         if self.facial.is_none() && self.reading_facial.is_none() {
             let files = backend.files().clone();
-            let fetch = async move { anyhow::Ok(files.read(eyes::PATH).await?) };
+            let fetch = async move { anyhow::Ok(files.read(fpeb::PATH).await?) };
             self.reading_facial = Some(TrackedPromise::spawn_local(fetch));
         }
 
@@ -985,11 +984,11 @@ impl CharacterBuilder {
             model.hinged(self.raised());
             // Neither eye bone is animated by anything, so the table is the whole of what sizes
             // them; a body, face or eye shape it says nothing about leaves them at rest.
-            let shape = self.choices.get(&eyes::EYE_SHAPE).copied().unwrap_or_default();
+            let shape = self.choices.get(&fpeb::EYE_SHAPE).copied().unwrap_or_default();
             model.eyed(
                 self.facial
                     .as_ref()
-                    .and_then(|held| eyes::scales(held, self.code, self.face, shape as u16))
+                    .and_then(|held| fpeb::scales(held, self.code, self.face, shape as u16))
                     .unwrap_or([1.0; 2]),
             );
             model.seated(self.mount_seat);

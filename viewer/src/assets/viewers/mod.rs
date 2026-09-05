@@ -16,6 +16,8 @@ pub mod chara;
 pub mod cmp;
 pub mod cutb;
 pub mod dic;
+pub mod fpeb;
+pub mod wtd;
 pub mod eid;
 pub mod eqdp;
 pub mod eqp;
@@ -385,6 +387,8 @@ pub enum Preview {
     GrassGrid(Box<grass::Grid>),
     /// A parsed word dictionary.
     Dic(Box<dic::Rendered>),
+    Fpeb(Box<fpeb::Rendered>),
+    Wtd(Box<wtd::Rendered>),
     /// A parsed cutscene.
     Cutb(Box<cutb::Rendered>),
     /// A parsed sound container.
@@ -451,6 +455,8 @@ impl Preview {
             Viewer::Gzd => grass::zone(path, bytes),
             Viewer::Ggd => grass::grid(path, bytes),
             Viewer::Dic => dic::decode(path, bytes),
+            Viewer::Fpeb => fpeb::decode(path, bytes),
+            Viewer::Wtd => wtd::decode(path, bytes),
             Viewer::Cutb => cutb::decode(path, bytes),
             Viewer::Scd => scd::decode(path, bytes),
             Viewer::Raw => return Self::Failed(String::new()),
@@ -511,6 +517,8 @@ impl Preview {
             Self::GrassZone(zone) => follow = grass::zone_ui(ui, zone, deps, backend),
             Self::GrassGrid(grid) => grass::grid_ui(ui, grid),
             Self::Dic(dictionary) => dic::ui(ui, dictionary),
+            Self::Fpeb(held) => fpeb::ui(ui, held),
+            Self::Wtd(held) => wtd::ui(ui, held),
             Self::Cutb(cutscene) => follow = cutb::ui(ui, cutscene, backend),
             Self::Stm(templates) => stm::ui(ui, templates, deps, backend),
             Self::Scd(container) => scd::ui(ui, container),
@@ -639,6 +647,8 @@ impl Preview {
             | Self::GrassZone(_)
             | Self::GrassGrid(_)
             | Self::Dic(_)
+            | Self::Fpeb(_)
+            | Self::Wtd(_)
             | Self::Cutb(_)
             | Self::Scd(_) => true,
             _ => false,
@@ -785,6 +795,14 @@ impl Preview {
         }
         if let Self::Cmp(parameters) = self {
             parameters.details_ui(ui, deps, backend);
+            return None;
+        }
+        if let Self::Fpeb(held) = self {
+            held.details_ui(ui);
+            return None;
+        }
+        if let Self::Wtd(held) = self {
+            held.details_ui(ui);
             return None;
         }
         if let Self::Dic(dictionary) = self {
@@ -938,6 +956,8 @@ pub enum Viewer {
     Gzd,
     Ggd,
     Dic,
+    Fpeb,
+    Wtd,
     Cutb,
     Scd,
     Text,
@@ -947,7 +967,7 @@ pub enum Viewer {
 impl Viewer {
     /// Everything except `Raw`, which the dropdown offers separately. Fixed order, so a given
     /// viewer sits in the same place whatever file is selected.
-    pub const RENDERED: [Self; 48] = [
+    pub const RENDERED: [Self; 50] = [
         Self::Texture,
         Self::Image,
         Self::Material,
@@ -993,6 +1013,8 @@ impl Viewer {
         Self::Gzd,
         Self::Ggd,
         Self::Dic,
+        Self::Fpeb,
+        Self::Wtd,
         Self::Cutb,
         Self::Scd,
         Self::Text,
@@ -1045,6 +1067,8 @@ impl Viewer {
             Self::Gzd => "Grass zone",
             Self::Ggd => "Grass grid",
             Self::Dic => "Word dictionary",
+            Self::Fpeb => "Facial parameter edits",
+            Self::Wtd => "Weapon type table",
             Self::Cutb => "Cutscene",
             Self::Scd => "Sound",
             Self::Text => "Text",
