@@ -279,6 +279,7 @@ impl Rig {
         origin: Option<&str>,
         time: f32,
         weight: f32,
+        retarget: bool,
     ) {
         if weight <= 0.0 {
             return;
@@ -294,10 +295,18 @@ impl Rig {
             else {
                 continue;
             };
-            let laid = match blends {
+            let mut laid = match blends {
                 true => over(&locals[bone], &sampled),
                 false => sampled,
             };
+            // A clip filed under another body states that body's own bone offsets, and a rig of
+            // different proportions wearing them comes apart at every joint. What retargets is the
+            // rotation; the lengths between the joints are the rig's own to keep.
+            if retarget {
+                let rest = &self.reference[bone];
+                laid.translation = rest.translation;
+                laid.scale = rest.scale;
+            }
             locals[bone] = match weight >= 1.0 {
                 true => laid,
                 false => mix(&locals[bone], &laid, weight),

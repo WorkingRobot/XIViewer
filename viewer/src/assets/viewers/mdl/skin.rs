@@ -1740,6 +1740,10 @@ impl Animation {
         let extras = self.extras.borrow();
         let mut locals = skin.rig.reference().to_vec();
         let mut lay = |path: &str, binding: &Binding, time: f32, weight: f32| {
+            // Lalafell file no drawn idle and no draw motion of their own, so both are read out of
+            // a body twice their height; taking that body's bone offsets with them is what tore
+            // the rig apart.
+            let foreign = filed_body(path).is_some_and(|body| Some(body) != self.code.as_deref());
             let ordered = self.code.as_deref().and_then(|code| ordering(code, path));
             let held = match &ordered {
                 Some(path) => extras.get(path).and_then(Option::as_ref),
@@ -1748,8 +1752,15 @@ impl Animation {
             let Some(names) = held.and_then(Fetch::ready).map(|held| &held.names) else {
                 return;
             };
-            skin.rig
-                .lay(&mut locals, binding, names, ordered.as_deref(), time, weight);
+            skin.rig.lay(
+                &mut locals,
+                binding,
+                names,
+                ordered.as_deref(),
+                time,
+                weight,
+                foreign,
+            );
         };
         for layer in self.layers() {
             // The incoming clip is laid over whatever is already there at the share the fade has
@@ -1997,6 +2008,14 @@ fn ridden(rig: Option<&str>, models: &[&str]) -> Option<String> {
 }
 
 /// The `m0911` of a model's path, which is what its skeleton and its animations are filed under.
+/// The body a pack is filed under, out of its own path, which `code` cannot answer for: an
+/// animation names its body in a directory rather than in its file name.
+fn filed_body(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("chara/human/")?;
+    let held = rest.get(..5)?;
+    (held.starts_with('c') && held[1..].bytes().all(|byte| byte.is_ascii_digit())).then_some(held)
+}
+
 pub fn code(model: &str) -> Option<String> {
     let name = file_name(model);
     let code = name.get(..5)?;
@@ -3018,6 +3037,24 @@ mod tests {
         );
     }
 
+    /// An animation names the body it is filed under in a directory, which is what says whether a
+    /// rig is wearing its own bone offsets or another body's.
+    #[test]
+    fn a_pack_states_the_body_it_is_filed_under() {
+        use super::filed_body;
+        assert_eq!(
+            filed_body("chara/human/c0701/animation/a0001/bt_swd_sld/resident/idle.pap"),
+            Some("c0701")
+        );
+        assert_eq!(
+            filed_body("chara/human/c0101/animation/a0001/bt_common/emote/clap.pap"),
+            Some("c0101")
+        );
+        // A prop or a mount is filed nowhere near a body, and answers for none.
+        assert_eq!(filed_body("chara/weapon/w1980/animation/a0001/idle.pap"), None);
+        assert_eq!(filed_body("chara/human/cabbage/animation/x.pap"), None);
+    }
+
     /// What one `cfxf_` pose is worth, off the real install, on the rig the viewer actually poses:
     /// the face skeleton merged into the body's. `grin.pap` holds a single frame of deltas, and
     /// composing it once on the merged rig moves no face bone further than it does on the face
@@ -3077,7 +3114,7 @@ mod tests {
 
             let moved = |rig: &Rig, origin: Option<&str>| -> Vec<(String, f32)> {
                 let mut locals = rig.reference().to_vec();
-                rig.lay(&mut locals, binding, face.bones(), origin, 0.0, 1.0);
+                rig.lay(&mut locals, binding, face.bones(), origin, 0.0, 1.0, false);
                 let rest = rig.world(rig.reference());
                 let posed = rig.world(&locals);
                 face.bones()
@@ -3098,7 +3135,7 @@ mod tests {
             let (mut turned, mut jaw) = (0.0f32, 0.0f32);
             {
                 let mut locals = alone.reference().to_vec();
-                alone.lay(&mut locals, binding, face.bones(), None, 0.0, 1.0);
+                alone.lay(&mut locals, binding, face.bones(), None, 0.0, 1.0, false);
                 for (at, local) in locals.iter().enumerate() {
                     let from = Quat::from_array(alone.reference()[at].rotation);
                     let by = from.angle_between(Quat::from_array(local.rotation));

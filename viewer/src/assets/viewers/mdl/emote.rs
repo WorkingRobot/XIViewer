@@ -342,7 +342,7 @@ impl Rigging {
         let binding = self.bindings.get(self.named.get(motion)?.1)?;
         let mut locals = self.rig.reference().to_vec();
         self.rig
-            .lay(&mut locals, binding, self.rig.names(), None, time, 1.0);
+            .lay(&mut locals, binding, self.rig.names(), None, time, 1.0, false);
         let posed = self.rig.world(&locals);
         Some(
             table
@@ -665,7 +665,7 @@ mod tests {
         let times = [0.0, 2.0, 5.0, 10.0, 16.0];
         for time in times {
             let mut locals = rig.reference().to_vec();
-            rig.lay(&mut locals, &bindings[0], rig.names(), None, time, 1.0);
+            rig.lay(&mut locals, &bindings[0], rig.names(), None, time, 1.0, false);
             let posed = rig.world(&locals);
             let held = posed[rig.bone("j_sebo_a").expect("the spine")].matrix();
             let joints = rigging.joints(motion, &table, time).expect("the prop's pose");
@@ -709,7 +709,7 @@ mod tests {
         for step in 0..=10 {
             let time = duration * step as f32 / 10.0;
             let mut locals = rig.reference().to_vec();
-            rig.lay(&mut locals, &bindings[0], rig.names(), None, time, 1.0);
+            rig.lay(&mut locals, &bindings[0], rig.names(), None, time, 1.0, false);
             let posed = rig.world(&locals);
             let at = |name: &str| {
                 posed[rig.bone(name).expect(name)]

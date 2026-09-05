@@ -397,6 +397,7 @@ impl Rendered {
                         None,
                         self.play.time.get(),
                         1.0,
+                        false,
                     );
                     let world = loaded.rig.world(&locals);
                     loaded.view.replace(loaded.rig.batches(&world, None));
