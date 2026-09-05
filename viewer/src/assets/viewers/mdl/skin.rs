@@ -653,7 +653,12 @@ impl Layer {
         let then = self.then.borrow_mut().take();
         let settle = self.settle.get();
         match (then, settle > 0.0) {
-            (Some(then), _) => self.load(&then, None, None, Some(self.over.get())),
+            // Priced like any other change rather than at the length that brought this clip in.
+            // That length is nought wherever nothing was playing before, and handing it back here
+            // both threw the outgoing clip away and opened the incoming one to full weight before
+            // its pack had landed, so the body stood in its reference pose for a frame and then
+            // snapped into the loop.
+            (Some(then), _) => self.load(&then, None, None, None),
             (None, true) => self.load("", None, None, Some(settle)),
             (None, false) => self.time.set(time - duration),
         }
@@ -2483,6 +2488,24 @@ mod tests {
             vec![("b.pap".to_owned(), Some("cfxf_salute".to_owned()))]
         );
         assert_eq!(layer.opening.borrow().as_deref(), Some("cfxf_salute"));
+    }
+
+    /// A clip queued behind another is priced like any other change. Handing it the length that
+    /// brought the last one in reads as "already priced", and where that length is nought the
+    /// layer opens the incoming clip to full weight before its pack has landed: the body stands in
+    /// its reference pose for a frame and then snaps into the loop.
+    #[test]
+    fn a_queued_clip_shows_nothing_until_it_is_priced() {
+        let layer = Layer::default();
+        layer.load("loop.pap", None, None, None);
+        assert!(layer.pricing.get());
+        assert_eq!(layer.share(), 0.0);
+
+        // What handing the settle a length of its own used to do.
+        let layer = Layer::default();
+        layer.load("loop.pap", None, None, Some(0.0));
+        assert!(!layer.pricing.get());
+        assert_eq!(layer.share(), 1.0);
     }
 
     #[test]
