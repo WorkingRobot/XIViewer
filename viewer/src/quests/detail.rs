@@ -511,7 +511,7 @@ async fn dialogue(
         if text.as_bytes().is_empty() {
             continue;
         }
-        let key = String::from_utf8_lossy(key.as_bytes()).into_owned();
+        let key = key.format().to_string();
         let speaker = match derive::line_of(&key, &id_upper) {
             derive::Line::Journal => "Journal".to_string(),
             derive::Line::Objective => "Objectives".to_string(),
@@ -562,7 +562,7 @@ async fn links(
         let Ok(value) = row.read_string(u32::from(column.offset())) else {
             continue;
         };
-        let value = String::from_utf8_lossy(value.as_bytes()).into_owned();
+        let value = value.format().to_string();
         if value.is_empty() {
             continue;
         }

@@ -1162,7 +1162,7 @@ async fn read_lines(backend: Backend, sheet: String, language: Language) -> anyh
             continue;
         };
         held.insert(
-            String::from_utf8_lossy(key.as_bytes()).into_owned(),
+            key.format().to_string(),
             text.as_bytes().to_vec(),
         );
     }

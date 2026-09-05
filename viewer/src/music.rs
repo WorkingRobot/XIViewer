@@ -1112,7 +1112,7 @@ async fn load_index(excel: CachedProvider) -> Result<Vec<BgmTrack>> {
         let Ok(cell) = row.read_string(offset) else {
             continue;
         };
-        let path = String::from_utf8_lossy(cell.as_bytes()).into_owned();
+        let path = cell.format().to_string();
         if path.ends_with(".scd") {
             tracks.push(BgmTrack { row_id, path });
         }

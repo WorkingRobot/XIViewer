@@ -568,13 +568,13 @@ async fn load_index(excel: CachedProvider) -> Result<Vec<Zone>> {
         let Ok(bg) = row.read_string(BG) else {
             continue;
         };
-        let bg = String::from_utf8_lossy(bg.as_bytes()).into_owned();
+        let bg = bg.format().to_string();
         if bg.is_empty() {
             continue;
         }
         let name = row
             .read_string(NAME)
-            .map(|s| String::from_utf8_lossy(s.as_bytes()).into_owned())
+            .map(|s| s.format().to_string())
             .unwrap_or_default();
         let place_name = row.read::<u16>(PLACE_NAME).unwrap_or_default();
         let path = format!("bg/{bg}.lvb");
@@ -606,7 +606,7 @@ async fn load_names(excel: CachedProvider, language: Language) -> Result<HashMap
         let Ok(name) = row.read_string(0) else {
             continue;
         };
-        let name = String::from_utf8_lossy(name.as_bytes()).into_owned();
+        let name = name.format().to_string();
         if !name.is_empty() {
             names.insert(row_id, name);
         }
