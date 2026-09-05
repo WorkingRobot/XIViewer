@@ -84,6 +84,16 @@ pub struct Rig {
     span: f32,
 }
 
+/// How a clip goes on: where in it, how much of it shows, the scope an extra skeleton's bones are
+/// named under, and whether the clip is filed under another body and so carries only its rotations.
+#[derive(Clone, Copy, Default)]
+pub struct Laid<'a> {
+    pub origin: Option<&'a str>,
+    pub time: f32,
+    pub weight: f32,
+    pub retarget: bool,
+}
+
 impl Rig {
     pub fn new(bones: &[String], parent_indices: &[i16], reference_pose: &[Transform]) -> Self {
         let at = bones
@@ -263,7 +273,7 @@ impl Rig {
         world
     }
 
-    /// Lays a motion's tracks over `locals` at `time`, `weight` of the way there.
+    /// Lays a motion's tracks over `locals` the way `laid` states.
     ///
     /// A motion's tracks are in the order of the skeleton it was authored against, which need not
     /// be this rig, so `ordering` names that skeleton's bones and the two are matched by name.
@@ -276,11 +286,9 @@ impl Rig {
         locals: &mut [Transform],
         binding: &Binding,
         ordering: &[String],
-        origin: Option<&str>,
-        time: f32,
-        weight: f32,
-        retarget: bool,
+        laid: Laid<'_>,
     ) {
+        let Laid { origin, time, weight, retarget } = laid;
         if weight <= 0.0 {
             return;
         }

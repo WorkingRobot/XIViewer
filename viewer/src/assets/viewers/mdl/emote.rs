@@ -14,6 +14,7 @@
 //! duration against the Havok motion's, in seconds, that the same pack plays (330/11, 60/2,
 //! 145/4.8333, 690/23 all divide out to exactly 30).
 
+use crate::assets::viewers::skeleton::Laid;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::Arc;
@@ -342,7 +343,7 @@ impl Rigging {
         let binding = self.bindings.get(self.named.get(motion)?.1)?;
         let mut locals = self.rig.reference().to_vec();
         self.rig
-            .lay(&mut locals, binding, self.rig.names(), None, time, 1.0, false);
+            .lay(&mut locals, binding, self.rig.names(), Laid { time, weight: 1.0, ..Laid::default() });
         let posed = self.rig.world(&locals);
         Some(
             table
@@ -665,7 +666,7 @@ mod tests {
         let times = [0.0, 2.0, 5.0, 10.0, 16.0];
         for time in times {
             let mut locals = rig.reference().to_vec();
-            rig.lay(&mut locals, &bindings[0], rig.names(), None, time, 1.0, false);
+            rig.lay(&mut locals, &bindings[0], rig.names(), Laid { time, weight: 1.0, ..Laid::default() });
             let posed = rig.world(&locals);
             let held = posed[rig.bone("j_sebo_a").expect("the spine")].matrix();
             let joints = rigging.joints(motion, &table, time).expect("the prop's pose");
@@ -709,7 +710,7 @@ mod tests {
         for step in 0..=10 {
             let time = duration * step as f32 / 10.0;
             let mut locals = rig.reference().to_vec();
-            rig.lay(&mut locals, &bindings[0], rig.names(), None, time, 1.0, false);
+            rig.lay(&mut locals, &bindings[0], rig.names(), Laid { time, weight: 1.0, ..Laid::default() });
             let posed = rig.world(&locals);
             let at = |name: &str| {
                 posed[rig.bone(name).expect(name)]

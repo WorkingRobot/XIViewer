@@ -1,6 +1,7 @@
 //! `.pap` animation packs: the motions one skeleton can play, the timeline driving each, and the
 //! motions themselves played back on the skeleton the pack is built for.
 
+use crate::assets::viewers::skeleton::Laid;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -394,10 +395,11 @@ impl Rendered {
                         &mut locals,
                         binding,
                         loaded.rig.names(),
-                        None,
-                        self.play.time.get(),
-                        1.0,
-                        false,
+                        Laid {
+                            time: self.play.time.get(),
+                            weight: 1.0,
+                            ..Laid::default()
+                        },
                     );
                     let world = loaded.rig.world(&locals);
                     loaded.view.replace(loaded.rig.batches(&world, None));

@@ -14,6 +14,7 @@
 //! the body's rather than posed apart, since each is stated as bones hanging off one the body
 //! already names.
 
+use crate::assets::viewers::skeleton::Laid;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Cursor;
@@ -1756,10 +1757,12 @@ impl Animation {
                 &mut locals,
                 binding,
                 names,
-                ordered.as_deref(),
-                time,
-                weight,
-                foreign,
+                Laid {
+                    origin: ordered.as_deref(),
+                    time,
+                    weight,
+                    retarget: foreign,
+                },
             );
         };
         for layer in self.layers() {
@@ -3114,7 +3117,7 @@ mod tests {
 
             let moved = |rig: &Rig, origin: Option<&str>| -> Vec<(String, f32)> {
                 let mut locals = rig.reference().to_vec();
-                rig.lay(&mut locals, binding, face.bones(), origin, 0.0, 1.0, false);
+                rig.lay(&mut locals, binding, face.bones(), Laid { origin, weight: 1.0, ..Laid::default() });
                 let rest = rig.world(rig.reference());
                 let posed = rig.world(&locals);
                 face.bones()
@@ -3135,7 +3138,7 @@ mod tests {
             let (mut turned, mut jaw) = (0.0f32, 0.0f32);
             {
                 let mut locals = alone.reference().to_vec();
-                alone.lay(&mut locals, binding, face.bones(), None, 0.0, 1.0, false);
+                alone.lay(&mut locals, binding, face.bones(), Laid { weight: 1.0, ..Laid::default() });
                 for (at, local) in locals.iter().enumerate() {
                     let from = Quat::from_array(alone.reference()[at].rotation);
                     let by = from.angle_between(Quat::from_array(local.rotation));
