@@ -2081,6 +2081,7 @@ const EXTENSIONS: &[(&str, &str, Viewer)] = &[
     ("plt", "PAP load table", Viewer::Raw),
     ("wtd", "Weapon type table", Viewer::Wtd),
     ("fpeb", "Facial parameter edits", Viewer::Fpeb),
+    ("waoe", "Attach offset list", Viewer::Waoe),
     ("spm", "Shader parameter map", Viewer::Spm),
     ("dic", "Word dictionary", Viewer::Dic),
 ];

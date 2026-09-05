@@ -17,6 +17,7 @@ pub mod cmp;
 pub mod cutb;
 pub mod dic;
 pub mod fpeb;
+pub mod waoe;
 pub mod wtd;
 pub mod eid;
 pub mod eqdp;
@@ -388,6 +389,7 @@ pub enum Preview {
     /// A parsed word dictionary.
     Dic(Box<dic::Rendered>),
     Fpeb(Box<fpeb::Rendered>),
+    Waoe(Box<waoe::Rendered>),
     Wtd(Box<wtd::Rendered>),
     /// A parsed cutscene.
     Cutb(Box<cutb::Rendered>),
@@ -456,6 +458,7 @@ impl Preview {
             Viewer::Ggd => grass::grid(path, bytes),
             Viewer::Dic => dic::decode(path, bytes),
             Viewer::Fpeb => fpeb::decode(path, bytes),
+            Viewer::Waoe => waoe::decode(path, bytes),
             Viewer::Wtd => wtd::decode(path, bytes),
             Viewer::Cutb => cutb::decode(path, bytes),
             Viewer::Scd => scd::decode(path, bytes),
@@ -518,6 +521,7 @@ impl Preview {
             Self::GrassGrid(grid) => grass::grid_ui(ui, grid),
             Self::Dic(dictionary) => dic::ui(ui, dictionary),
             Self::Fpeb(held) => fpeb::ui(ui, held),
+            Self::Waoe(held) => waoe::ui(ui, held),
             Self::Wtd(held) => wtd::ui(ui, held),
             Self::Cutb(cutscene) => follow = cutb::ui(ui, cutscene, backend),
             Self::Stm(templates) => stm::ui(ui, templates, deps, backend),
@@ -648,6 +652,7 @@ impl Preview {
             | Self::GrassGrid(_)
             | Self::Dic(_)
             | Self::Fpeb(_)
+            | Self::Waoe(_)
             | Self::Wtd(_)
             | Self::Cutb(_)
             | Self::Scd(_) => true,
@@ -798,6 +803,10 @@ impl Preview {
             return None;
         }
         if let Self::Fpeb(held) = self {
+            held.details_ui(ui);
+            return None;
+        }
+        if let Self::Waoe(held) = self {
             held.details_ui(ui);
             return None;
         }
@@ -957,6 +966,7 @@ pub enum Viewer {
     Ggd,
     Dic,
     Fpeb,
+    Waoe,
     Wtd,
     Cutb,
     Scd,
@@ -967,7 +977,7 @@ pub enum Viewer {
 impl Viewer {
     /// Everything except `Raw`, which the dropdown offers separately. Fixed order, so a given
     /// viewer sits in the same place whatever file is selected.
-    pub const RENDERED: [Self; 50] = [
+    pub const RENDERED: [Self; 51] = [
         Self::Texture,
         Self::Image,
         Self::Material,
@@ -1014,6 +1024,7 @@ impl Viewer {
         Self::Ggd,
         Self::Dic,
         Self::Fpeb,
+        Self::Waoe,
         Self::Wtd,
         Self::Cutb,
         Self::Scd,
@@ -1068,6 +1079,7 @@ impl Viewer {
             Self::Ggd => "Grass grid",
             Self::Dic => "Word dictionary",
             Self::Fpeb => "Facial parameter edits",
+            Self::Waoe => "Attach offset list",
             Self::Wtd => "Weapon type table",
             Self::Cutb => "Cutscene",
             Self::Scd => "Sound",
