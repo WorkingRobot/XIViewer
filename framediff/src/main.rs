@@ -179,8 +179,8 @@ fn run() -> Result<String, String> {
         );
         let _ = writeln!(
             out,
-            "        drawn {} of {} placed, models {}, materials {}, passes {}",
-            state.drawn, state.placed, state.models, state.materials, state.passes,
+            "        drawn {} of {} placed, models {}, materials {}, lights {}, passes {}",
+            state.drawn, state.placed, state.models, state.materials, state.lights, state.passes,
         );
         if let Some(want) = &args.commit
             && !want.starts_with(&state.commit)

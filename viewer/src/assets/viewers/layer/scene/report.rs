@@ -38,6 +38,8 @@ pub struct Frame<'a> {
     pub casting: usize,
     pub models: String,
     pub materials: String,
+    /// Lamps the frame lit with, of every light the zone places.
+    pub lights: String,
     pub passes: String,
 }
 

@@ -4425,6 +4425,7 @@ impl Scene {
                 self.translated.keys().filter(|(_, waving)| !waving).count(),
                 self.materials.len()
             ),
+            lights: format!("{} of {}", self.lamps().len(), self.lights.len()),
             passes: self.passes(),
         });
     }

@@ -32,6 +32,8 @@ pub struct State {
     pub drawn: usize,
     pub models: String,
     pub materials: String,
+    #[serde(default)]
+    pub lights: String,
     pub passes: String,
 }
 
