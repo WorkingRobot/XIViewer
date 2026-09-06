@@ -1673,7 +1673,11 @@ impl Scene {
                                 LightKind::Flat => program::LampKind::Plane,
                                 _ => program::LampKind::Point,
                             };
-                            let color = color * held.intensity();
+                            // The engine reads a light's stated colour as gamma-two and squares
+                            // it into linear: one stated at eight lands at sixty-four, and a cool
+                            // one comes out cooler for it. Measured against the game's own
+                            // `g_LightParam` across every light of a frame.
+                            let color = (color * held.intensity()).powf(2.0);
                             let range = light.range().max(0.001);
                             // Halved, since each angle is stated across the whole cone. Only a spot
                             // carries them, and the light's own package reads a different lane
