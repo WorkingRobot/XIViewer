@@ -537,6 +537,9 @@ impl From<i32> for Blend {
     }
 }
 
+/// The point sprite whose corners the engine sets into the screen for it.
+const POWDER: i32 = 1;
+
 /// A world axis, as `RBDT` names one.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Axis {
@@ -575,6 +578,14 @@ impl Facing {
     /// what names none is left in the plane its own rotation puts it in.
     fn read(kind: i32, base: i32) -> Self {
         match (kind, base) {
+            // A powder naming no base at all is billed at the screen. Its own vertex shader never
+            // derives a basis from the view, but that settles nothing: it turns a corner inside the
+            // instance's world matrix, and the engine builds that matrix on the card's behalf, the
+            // same way `apricot_shape` is handed corners already in the world. Three sightings
+            // agree - a torch fire stands edge-on without this, a sparkle lying in the world reads
+            // as stretched sideways, and Elpis' lamp beam is a Windmill rather than a powder, so it
+            // keeps the plane its own angles put it in and goes on turning with its lamp.
+            (POWDER, 10) => Self::Screen,
             (10..=12, 0..=2 | 10) => Self::Still(Axis::Y),
             (_, 0) => Self::Still(Axis::X),
             (_, 1) => Self::Still(Axis::Y),

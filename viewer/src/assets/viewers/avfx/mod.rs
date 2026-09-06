@@ -1863,7 +1863,8 @@ mod tests {
             .effect;
             at(effect, 0)[0].facing
         };
-        assert_eq!(unbased(1), sim::Facing::Still(sim::Axis::Z));
+        // A powder is the one kind the engine sets into the screen itself.
+        assert_eq!(unbased(1), sim::Facing::Screen);
         assert_eq!(unbased(2), sim::Facing::Still(sim::Axis::Z));
         assert_eq!(unbased(5), sim::Facing::Still(sim::Axis::Z));
         assert_eq!(unbased(11), sim::Facing::Still(sim::Axis::Y));
