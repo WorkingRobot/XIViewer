@@ -18,6 +18,17 @@ pub enum Role {
     Diffuse,
 }
 
+/// `GlassBlendMode`, and the value that adds rather than multiplies.
+const GLASS_BLEND_MODE: u32 = 0x9f2a_6183;
+const GLASS_BLEND_ADD: u32 = 0x105a_09de;
+
+/// How a glass pass reaches the frame behind it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Glass {
+    Mul,
+    Add,
+}
+
 /// Which set of meanings a material's textures carry. Every family binds the same four sampler
 /// slots, so the slot a texture arrives in does not say what its channels are.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -221,6 +232,27 @@ impl Material {
 
     pub fn family(&self) -> Family {
         self.family
+    }
+
+    /// How a glass surface reaches what is already drawn. `characterglass.shpk` is the one package
+    /// that states a blend of its own, and it defaults to a multiply: its pass hands over the colour
+    /// the frame behind is to be scaled by rather than one to be mixed into it, so blending it on
+    /// coverage lays a lit card where the game tints what stands behind, and the halo chain then
+    /// spreads that card.
+    pub fn glass(&self) -> Option<Glass> {
+        if !self.shader.ends_with("/characterglass.shpk") {
+            return None;
+        }
+        let stated = self
+            .held()
+            .shader_keys()
+            .iter()
+            .find(|key| key.category() == GLASS_BLEND_MODE)
+            .map(|key| key.value());
+        Some(match stated == Some(GLASS_BLEND_ADD) {
+            true => Glass::Add,
+            false => Glass::Mul,
+        })
     }
 
     pub fn drawn(&self) -> bool {

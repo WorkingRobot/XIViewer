@@ -2346,6 +2346,7 @@ impl Rendered {
                     shaded: shaded.flatten(),
                     runs,
                     family: material.family(),
+                    glass: material.glass(),
                     normal: material.texture(Role::Normal).and_then(|path| bind(path)),
                     index: material.texture(Role::Index).and_then(|path| bind(path)),
                     mask: material.texture(Role::Mask).and_then(|path| bind(path)),

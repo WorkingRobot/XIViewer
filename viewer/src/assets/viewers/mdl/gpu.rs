@@ -15,7 +15,7 @@ use glow::HasContext;
 
 use super::deferred::{self, Layered, Linked, TARGETS, TYPES, build_pair, dwords, sampler};
 use super::grid::{Grid, Ground};
-use super::material::Family;
+use super::material::{Family, Glass};
 use super::super::avfx;
 use super::{Table, Vertex, program};
 
@@ -153,6 +153,9 @@ pub struct Surface {
     pub emissive_color: [f32; 3],
     pub normal_scale: f32,
     pub cull: bool,
+    /// Set where the material's own package states how its glass reaches the frame, which is the
+    /// one package that does.
+    pub glass: Option<Glass>,
 }
 
 /// What a mesh draws as while its material is still being fetched: bare geometry, nothing tinted
@@ -172,6 +175,7 @@ impl Default for Surface {
             diffuse_color: [1.0; 3],
             emissive_color: [0.0; 3],
             normal_scale: 1.0,
+            glass: None,
             cull: false,
         }
     }
@@ -1082,6 +1086,18 @@ impl Game {
                 let Some(mesh) = meshes.get(*at) else {
                     continue;
                 };
+                // Glass states its own blend. Its pass hands over what the frame behind is to be
+                // scaled by rather than what to mix into it, so blending that on coverage lays a lit
+                // card over the frame and the halo chain then spreads it.
+                if behind {
+                    unsafe {
+                        match surface.glass {
+                            Some(Glass::Mul) => gl.blend_func(glow::DST_COLOR, glow::ZERO),
+                            Some(Glass::Add) => gl.blend_func(glow::SRC_ALPHA, glow::ONE),
+                            None => gl.blend_func(glow::SRC_ALPHA, glow::ONE_MINUS_SRC_ALPHA),
+                        }
+                    }
+                }
                 let held = surface
                     .shaded
                     .as_ref()
