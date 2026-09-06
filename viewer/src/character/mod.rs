@@ -1188,13 +1188,12 @@ impl CharacterBuilder {
 
     /// The bone each drawn weapon's own effect plays from, for the ones whose `.imc` names one.
     /// The game only plays a weapon's effect in a battle stance, so nothing sheathed carries one.
-    fn effects(&self, carried: &[(String, String, Mat4)]) -> Vec<String> {
+    fn effects(&self, carried: &[(String, String, Mat4)]) -> Vec<(String, String)> {
         if !self.drawn {
             self.glowed.take();
             return Vec::new();
         }
-        let mut named = Vec::new();
-        let found = self
+        let found: Vec<(String, String)> = self
             .wielded()
             .into_iter()
             .filter_map(|weapon| {
@@ -1202,10 +1201,10 @@ impl CharacterBuilder {
                 let imc = mdl::imc_path(&model).and_then(|path| self.held.get(&path))?;
                 let path = weapons::vfx_path(&weapon, imc)?;
                 let (_, bone, _) = carried.iter().find(|(held, ..)| *held == model)?;
-                named.push(path);
-                Some(bone.clone())
+                Some((path, bone.clone()))
             })
             .collect();
+        let named: Vec<String> = found.iter().map(|(path, _)| path.clone()).collect();
         if *self.glowed.borrow() != named {
             for path in &named {
                 log::info!("character: a drawn weapon plays {path}");

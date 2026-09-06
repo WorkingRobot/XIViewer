@@ -514,7 +514,10 @@ pub struct Rendered {
     /// worn as: a weapon, carried at the placement its attach point states this frame.
     attachments: RefCell<Vec<Attachment>>,
     /// The bones a weapon's own effect would play from, for the weapons carrying one and drawn.
-    glowing: RefCell<Vec<String>>,
+    /// The effect a drawn weapon plays and the bone it hangs from, one pair a weapon, with the
+    /// clock it started running on.
+    glowing: RefCell<Vec<(String, String)>>,
+    glowing_at: std::cell::Cell<Option<f64>>,
     /// The props, sound and vfx an emote's own timeline states, read against whatever the body is
     /// playing.
     emote: RefCell<emote::Cue>,
@@ -611,6 +614,7 @@ pub fn compose(parts: &[Source]) -> Result<Rendered> {
         dyed: Default::default(),
         attachments: Default::default(),
         glowing: Default::default(),
+        glowing_at: Default::default(),
         emote: Default::default(),
         effects: Default::default(),
         fired: Default::default(),
@@ -2380,7 +2384,7 @@ impl Rendered {
         // no particles for one, only where and when it would draw.
         let mut markers = std::mem::take(&mut pose.skeleton);
         if let Some((names, ..)) = &rig {
-            for bone in self.glowing.borrow().iter() {
+            for (_, bone) in self.glowing.borrow().iter() {
                 let Some(&world) = names
                     .iter()
                     .position(|name| name == bone)
@@ -2402,7 +2406,7 @@ impl Rendered {
         }
         // Where each vfx the emote's own timeline is running stands this frame, which the next
         // poll steps and the callback below draws.
-        *self.fired.borrow_mut() = match (self.animation.body_playing(), &rig) {
+        let mut firing: Vec<effects::Fired> = match (self.animation.body_playing(), &rig) {
             (Some((_, _, time)), Some((names, ..))) => self
                 .emote
                 .borrow()
@@ -2442,6 +2446,38 @@ impl Rendered {
                 .collect(),
             _ => Vec::new(),
         };
+        // A drawn weapon's own effect, which runs for as long as it is drawn rather than off a
+        // timeline of its own: the clock starts over whenever the set of them changes, so putting a
+        // weapon away and taking it out again plays it from the beginning.
+        if let Some((names, ..)) = &rig {
+            let now = ui.input(|input| input.time);
+            let start = match self.glowing_at.get() {
+                Some(held) => held,
+                None => {
+                    self.glowing_at.set(Some(now));
+                    now
+                }
+            };
+            for (at, (path, bone)) in self.glowing.borrow().iter().enumerate() {
+                let Some(&world) = names
+                    .iter()
+                    .position(|name| name == bone)
+                    .and_then(|bone| pose.world.get(bone))
+                else {
+                    continue;
+                };
+                firing.push(effects::Fired {
+                    // Past anything an emote's own timeline can number, so the two never share a
+                    // running state.
+                    id: 1 << 48 | at as u64,
+                    path: path.clone(),
+                    at: world,
+                    since: (now - start) as f32,
+                    tint: Vec4::ONE,
+                });
+            }
+        }
+        *self.fired.borrow_mut() = firing;
         // Carried rather than written into the camera, so a motion that walks runs in place and the
         // user's own orbit, pan and zoom still mean what they did.
         let focus = level.home.target + pose.drift;
@@ -3422,8 +3458,11 @@ impl Rendered {
 
     /// Where each drawn weapon's own effect would play, by the bone it hangs from. The character
     /// scene runs no particles, so this marks the place the way an emote's own vfx is marked.
-    pub fn glowing(&self, bones: Vec<String>) {
-        *self.glowing.borrow_mut() = bones;
+    pub fn glowing(&self, effects: Vec<(String, String)>) {
+        if *self.glowing.borrow() != effects {
+            self.glowing_at.set(None);
+        }
+        *self.glowing.borrow_mut() = effects;
     }
 
     /// Stands the character in the first of `poses` its own pack actually holds, cross-fading out
