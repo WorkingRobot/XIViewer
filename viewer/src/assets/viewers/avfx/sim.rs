@@ -943,6 +943,9 @@ struct Spawn {
     count: i32,
     delay: f32,
     pass: Pass,
+    /// `bOvr`/`OvrV`: the life this entry gives what it makes, in place of the life that particle
+    /// states for itself. Unset where the entry leaves the particle its own.
+    life: Option<f32>,
 }
 
 impl Spawn {
@@ -958,6 +961,8 @@ impl Spawn {
                 1 => Pass::Start,
                 _ => Pass::End,
             },
+            life: (integer(blocks, "bOvr").unwrap_or_default() != 0)
+                .then(|| integer(blocks, "OvrV").unwrap_or_default() as f32),
         })
     }
 
@@ -1359,7 +1364,9 @@ impl Effect {
             let velocity = rotation(read(&def.heading, local)) * Vec3::Y * def.speed.at(local);
 
             for spawn in &def.particles {
-                let life = self.particles[spawn.target].life.unwrap_or(f32::INFINITY);
+                let life = spawn
+                    .life
+                    .unwrap_or_else(|| self.particles[spawn.target].life.unwrap_or(f32::INFINITY));
                 for _ in 0..spawn.made(burst, previous, local) {
                     if state.particles.len() >= PARTICLES {
                         break;
