@@ -855,11 +855,6 @@ pub struct Scene {
     /// A preset being picked or written, since a file dialog answers a frame or more later. Held
     /// rather than forgotten: dropping a promise cancels the future behind it.
     picking: Option<TrackedPromise<Option<Vec<u8>>>>,
-    /// Whether "From clipboard" is waiting on the next `Event::Paste` to land: egui has no
-    /// synchronous clipboard read. Native answers `RequestPaste` with one a frame later. The web
-    /// backend leaves that command unimplemented, so there the browser's clipboard is read
-    /// directly and this only ever catches a real Ctrl+V.
-    awaiting_paste: bool,
     saving: Option<TrackedPromise<()>>,
     /// Where the eye stood when the instance buffers were last written.
     written: Vec3,
@@ -1174,7 +1169,6 @@ impl Scene {
             path: path.to_owned(),
             preset: preset::taken(path),
             picking: None,
-            awaiting_paste: false,
             saving: None,
             written: Vec3::splat(f32::INFINITY),
             dirty: true,
@@ -4725,20 +4719,22 @@ impl Scene {
             arrived.extend(held.clone());
             self.picking = None;
         }
-        // Armed by "From clipboard": egui has no synchronous clipboard read, so this is the next
-        // `Event::Paste` to land instead, whether that is `RequestPaste` answering on its own
-        // (native) or a real Ctrl+V the browser hands over (web).
-        if self.awaiting_paste
-            && let Some(text) = ui.ctx().input(|input| {
-                input.raw.events.iter().find_map(|event| match event {
-                    egui::Event::Paste(text) => Some(text.clone()),
+        // A pasted preset stands this view wherever it was captured from, whether the paste is a
+        // plain Ctrl+V, the browser's clipboard answering "From clipboard", or `RequestPaste`
+        // coming back on native. Anything that does not open like a preset is somebody else's.
+        arrived.extend(ui.ctx().input(|input| {
+            input
+                .raw
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Paste(text) => Some(text),
                     _ => None,
                 })
-            })
-        {
-            self.awaiting_paste = false;
-            arrived.push(text.into_bytes());
-        }
+                .filter(|text| preset::looks_like(text))
+                .map(|text| text.clone().into_bytes())
+                .collect::<Vec<_>>()
+        }));
         for bytes in &arrived {
             match preset::Preset::read(bytes) {
                 Ok(held) => {
@@ -4776,11 +4772,8 @@ impl Scene {
                         }
                         if ui.button("From clipboard").clicked() {
                             #[cfg(not(target_arch = "wasm32"))]
-                            {
-                                self.awaiting_paste = true;
-                                ui.ctx()
-                                    .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
-                            }
+                            ui.ctx()
+                                .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
                             #[cfg(target_arch = "wasm32")]
                             {
                                 self.picking = Some(TrackedPromise::spawn_local(async {

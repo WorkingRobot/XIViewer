@@ -114,23 +114,21 @@ async function click(cdp: Cdp, x: number, y: number) {
 // the `TextEdit` applies on Enter instead. Repeated, because a press landing between two frames of
 // a loading zone is simply lost, and the box keeps what the last press put in it.
 async function paste(cdp: Cdp, text: string) {
-    for (let step = 0; step < 3; step++) {
-        await click(cdp, WIDTH - 200, 113);
-        await sleep(400);
-        for (const type of ["keyDown", "keyUp"]) {
-            await cdp.send("Input.dispatchKeyEvent", {
-                type, key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2,
-            });
-        }
-        await cdp.send("Input.insertText", { text });
-        await sleep(400);
-        for (const type of ["keyDown", "keyUp"]) {
-            await cdp.send("Input.dispatchKeyEvent", {
-                type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r",
-            });
-        }
-        await sleep(2500);
-    }
+    // The scene tab takes a preset off any paste that opens like one, so this hands the page a
+    // paste event outright rather than driving the Import menu by pixel.
+    const held = JSON.stringify(text);
+    await cdp.send("Runtime.evaluate", {
+        expression: `(() => {
+            const data = new DataTransfer();
+            data.setData("text/plain", ${held});
+            for (const target of [document, window, ...document.querySelectorAll("canvas")]) {
+                target.dispatchEvent(new ClipboardEvent("paste", {
+                    clipboardData: data, bubbles: true, cancelable: true,
+                }));
+            }
+        })()`,
+    });
+    await sleep(4000);
 }
 
 async function main() {
