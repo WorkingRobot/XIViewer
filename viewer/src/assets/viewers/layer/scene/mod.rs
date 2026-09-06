@@ -32,6 +32,7 @@ use std::time::Instant;
 use web_time::Instant;
 
 use anyhow::Result;
+use egui::containers::menu::MenuButton;
 use egui::{Color32, RichText, ScrollArea, Sense, TextureHandle, TextureOptions};
 use glam::{Mat3, Mat4, Quat, Vec3, Vec4};
 use half::f16;
@@ -55,7 +56,7 @@ use super::Source;
 use crate::assets::deps::Deps;
 use crate::backend::Backend;
 use crate::data::DecodedTexture;
-use crate::utils::{TrackedPromise, export};
+use crate::utils::TrackedPromise;
 
 use mdl::material::Material;
 use mdl::program;
@@ -854,8 +855,11 @@ pub struct Scene {
     /// A preset being picked or written, since a file dialog answers a frame or more later. Held
     /// rather than forgotten: dropping a promise cancels the future behind it.
     picking: Option<TrackedPromise<Option<Vec<u8>>>>,
-    /// A preset pasted in whole, for a window nothing can open a file dialog over.
-    pasted: String,
+    /// Whether "From clipboard" is waiting on the next `Event::Paste` to land: egui has no
+    /// synchronous clipboard read. Native answers `RequestPaste` with one a frame later; the web
+    /// target wires nothing up to the browser's own clipboard API, so there this waits on a real
+    /// Ctrl+V instead.
+    awaiting_paste: bool,
     saving: Option<TrackedPromise<()>>,
     /// Where the eye stood when the instance buffers were last written.
     written: Vec3,
@@ -1170,7 +1174,7 @@ impl Scene {
             path: path.to_owned(),
             preset: preset::taken(path),
             picking: None,
-            pasted: String::new(),
+            awaiting_paste: false,
             saving: None,
             written: Vec3::splat(f32::INFINITY),
             dirty: true,
@@ -4721,6 +4725,20 @@ impl Scene {
             arrived.extend(held.clone());
             self.picking = None;
         }
+        // Armed by "From clipboard": egui has no synchronous clipboard read, so this is the next
+        // `Event::Paste` to land instead, whether that is `RequestPaste` answering on its own
+        // (native) or a real Ctrl+V the browser hands over (web).
+        if self.awaiting_paste
+            && let Some(text) = ui.ctx().input(|input| {
+                input.raw.events.iter().find_map(|event| match event {
+                    egui::Event::Paste(text) => Some(text.clone()),
+                    _ => None,
+                })
+            })
+        {
+            self.awaiting_paste = false;
+            arrived.push(text.into_bytes());
+        }
         for bytes in &arrived {
             match preset::Preset::read(bytes) {
                 Ok(held) => {
@@ -4742,81 +4760,77 @@ impl Scene {
         }
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             section(ui, "View");
-            // Pasted rather than picked, since a file dialog is the one way in that nothing outside
-            // the window can drive: a headless run positions the camera through here.
-            let pasted = ui.add(
-                egui::TextEdit::singleline(&mut self.pasted)
-                    .hint_text("paste a TitleEdit preset")
-                    .desired_width(f32::INFINITY),
-            );
-            let mut load =
-                pasted.lost_focus() && ui.input(|held| held.key_pressed(egui::Key::Enter));
-            // Wrapped rather than run on: four buttons in one row is wider than the panel's own
-            // minimum, and a row that can't shrink pins the whole panel at its own width.
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Import preset").clicked() {
-                    self.picking = Some(TrackedPromise::spawn_local(async {
-                        let held = rfd::AsyncFileDialog::new()
-                            .set_title("Import a TitleEdit preset")
-                            .add_filter("TitleEdit preset", &["json"])
-                            .pick_file()
-                            .await?;
-                        Some(held.read().await)
-                    }));
-                }
-                load |= ui.button("Load pasted").clicked();
-                if load {
-                    match preset::Preset::read(self.pasted.as_bytes()) {
-                        Ok(held) => {
-                            match held.level == self.path {
-                                true => self.stand_where(&held),
-                                false => {
-                                    *follow = Some(held.level.clone());
-                                    preset::hold(held);
-                                    return;
-                                }
-                            }
-                            self.preset = Some(held);
-                            changed = true;
+            ui.columns_const(|[c1, c2]| {
+                c1.vertical_centered_justified(|ui| {
+                    MenuButton::from_button(egui::Button::new("Import ▾")).ui(ui, |ui| {
+                        if ui.button("From file").clicked() {
+                            self.picking = Some(TrackedPromise::spawn_local(async {
+                                let held = rfd::AsyncFileDialog::new()
+                                    .set_title("Import a TitleEdit preset")
+                                    .add_filter("TitleEdit preset", &["json"])
+                                    .pick_file()
+                                    .await?;
+                                Some(held.read().await)
+                            }));
+                            ui.close();
                         }
-                        Err(why) => log::warn!("assets/layer: this is no TitleEdit preset: {why}"),
+                        if ui.button("From clipboard").clicked() {
+                            self.awaiting_paste = true;
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                            ui.close();
+                        }
+                    });
+                });
+                c2.vertical_centered_justified(|ui| {
+                    if self.saving.is_some() {
+                        ui.spinner();
                     }
-                }
-                let held = preset::Preset::of(
-                    &self.path,
-                    self.camera.position,
-                    self.camera.forward(),
-                    self.fov,
-                    self.ambient.weather_id(),
-                    self.ambient.time,
-                );
-                let file_name = format!("TE_{}.json", held.name);
-                let choices = match held.write() {
-                    Ok(text) => vec![
-                        export::Choice::bytes("Export preset", file_name, move || {
-                            Ok(text.into_bytes())
-                        })
-                        .title("Export a TitleEdit preset")
-                        .filter("JSON", &["json"]),
-                    ],
-                    Err(why) => {
-                        log::error!("assets/layer: {why}");
-                        Vec::new()
-                    }
-                };
-                let promise =
-                    export::menu(ui, "Export preset", None, self.saving.is_some(), choices, egui::Vec2::ZERO);
-                if promise.is_some() {
-                    self.saving = promise;
-                }
-                // The same shape the plugin hands over its own clipboard, so a paste elsewhere
-                // reads it back.
-                if ui.button("Copy preset").clicked() {
-                    match held.share() {
-                        Ok(text) => ui.ctx().copy_text(text),
-                        Err(why) => log::error!("assets/layer: {why}"),
-                    }
-                }
+                    ui.add_enabled_ui(self.saving.is_none(), |ui| {
+                        MenuButton::from_button(egui::Button::new("Export ▾")).ui(ui, |ui| {
+                            let held = preset::Preset::of(
+                                &self.path,
+                                self.camera.position,
+                                self.camera.forward(),
+                                self.fov,
+                                self.ambient.weather_id(),
+                                self.ambient.time,
+                            );
+                            if ui.button("To file").clicked() {
+                                match held.write() {
+                                    Ok(text) => {
+                                        let file_name = format!("TE_{}.json", held.name);
+                                        let ctx = ui.ctx().clone();
+                                        self.saving = Some(TrackedPromise::spawn_local(async move {
+                                            if let Some(file) = rfd::AsyncFileDialog::new()
+                                                .set_title("Export a TitleEdit preset")
+                                                .set_file_name(&file_name)
+                                                .add_filter("JSON", &["json"])
+                                                .save_file()
+                                                .await
+                                            {
+                                                if let Err(why) = file.write(text.as_bytes()).await {
+                                                    log::error!("assets/layer: {why}");
+                                                }
+                                                ctx.request_repaint();
+                                            }
+                                        }));
+                                    }
+                                    Err(why) => log::error!("assets/layer: {why}"),
+                                }
+                                ui.close();
+                            }
+                            // The same shape the plugin hands over its own clipboard, so a paste
+                            // elsewhere reads it back.
+                            if ui.button("To clipboard").clicked() {
+                                match held.share() {
+                                    Ok(text) => ui.ctx().copy_text(text),
+                                    Err(why) => log::error!("assets/layer: {why}"),
+                                }
+                                ui.close();
+                            }
+                        });
+                    });
+                });
             });
             if let Some(held) = &self.preset {
                 ui.label(RichText::new(format!("Preset  {}", held.name)).weak());
