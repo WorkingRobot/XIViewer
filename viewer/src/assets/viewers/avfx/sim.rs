@@ -537,12 +537,6 @@ impl From<i32> for Blend {
     }
 }
 
-/// The two kinds whose geometry is not a quad the file orients: measured over 20,000 files, 99.8%
-/// of one and 99.3% of the other name no rotation base at all, where every kind that does name one
-/// never leaves it out.
-const POWDER: i32 = 1;
-const WINDMILL: i32 = 2;
-
 /// A world axis, as `RBDT` names one.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Axis {
@@ -581,11 +575,6 @@ impl Facing {
     /// what names none is left in the plane its own rotation puts it in.
     fn read(kind: i32, base: i32) -> Self {
         match (kind, base) {
-            // Powder and Windmill are a point sprite and a ribbon, whose corners are already set
-            // into the screen before the package ever sees them: that is why apricot's own vertex
-            // shader never derives a basis from the view and still faces the eye. `None` on either
-            // names no plane to lie in, so reading it as one left a fire standing edge-on.
-            (POWDER | WINDMILL, 10) => Self::Screen,
             (10..=12, 0..=2 | 10) => Self::Still(Axis::Y),
             (_, 0) => Self::Still(Axis::X),
             (_, 1) => Self::Still(Axis::Y),

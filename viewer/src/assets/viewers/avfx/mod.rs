@@ -1843,10 +1843,7 @@ mod tests {
     }
 
     /// Naming no rotation base leaves a sprite in its own plane rather than against the screen, and
-    /// a decal in the one it is cast onto - except for the two kinds that are not a quad the file
-    /// orients at all. A powder is a point sprite and a windmill a ribbon, both already set into the
-    /// screen, which is why apricot's own vertex shader never derives a basis from the view and
-    /// still faces the eye; reading their `None` as a world plane stood a fire edge-on.
+    /// a decal in the one it is cast onto.
     #[test]
     fn a_sprite_with_no_rotation_base_stays_in_its_own_plane() {
         let unbased = |kind: i32| {
@@ -1861,9 +1858,8 @@ mod tests {
             .effect;
             at(effect, 0)[0].facing
         };
-        assert_eq!(unbased(1), sim::Facing::Screen);
-        assert_eq!(unbased(2), sim::Facing::Screen);
-        // Every kind that does orient a quad keeps the plane its base names.
+        assert_eq!(unbased(1), sim::Facing::Still(sim::Axis::Z));
+        assert_eq!(unbased(2), sim::Facing::Still(sim::Axis::Z));
         assert_eq!(unbased(5), sim::Facing::Still(sim::Axis::Z));
         assert_eq!(unbased(11), sim::Facing::Still(sim::Axis::Y));
         // The screen billboard is a base of its own, and still reads as one.
