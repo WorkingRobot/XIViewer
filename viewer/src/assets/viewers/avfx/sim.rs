@@ -647,6 +647,10 @@ pub struct Shading {
     /// Whether this is drawn from a stream the viewer places in the world rather than from one of
     /// the effect's own models.
     pub sprite: bool,
+    /// `DpOf`, how far toward the eye the vertex shader pulls the fragment's own depth before it is
+    /// tested: `min(w, DpOf / w + z)`, so it holds a flame over the brazier it stands in rather
+    /// than letting the rim it touches cut it away.
+    pub depth_offset: f32,
 }
 
 /// What a model particle's rim ramp is written as, `FrC` against `ColB` and `ColE`. A file that
@@ -832,6 +836,11 @@ fn shading(block: &Block, lights: Option<Vec<(u32, u32)>>, sprite: bool) -> Shad
             integer(first, "TCAT").unwrap_or(1) as f32,
         ],
         sprite,
+        depth_offset: blocks
+            .iter()
+            .find(|held| held.name() == "DpOf")
+            .and_then(Block::f32)
+            .unwrap_or_default(),
     }
 }
 

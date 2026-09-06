@@ -323,6 +323,7 @@ impl Particles {
         }
         let instance = Instance {
             calculate: batch.shading.calculate,
+            depth_offset: batch.shading.depth_offset,
             ..Instance::default()
         };
         self.bind(gl, batch.def, &frame.scene, &instance)?;

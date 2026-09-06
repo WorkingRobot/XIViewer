@@ -1255,6 +1255,7 @@ pub(crate) fn batches(
         .filter_map(|((def, shape, blend), mut held)| {
             held.sort_by(|(a, _), (b, _)| a.total_cmp(b));
             let mean = held.iter().map(|(depth, _)| depth).sum::<f32>() / held.len() as f32;
+            let shading = effect.shading(def)?;
             let mut vertices = Vec::new();
             let mut instances = Vec::new();
             for (_, drawn) in &held {
@@ -1283,6 +1284,7 @@ pub(crate) fn batches(
                                 Vec3::from(drawn.center),
                             ),
                             color: Vec4::from(drawn.color),
+                            depth_offset: shading.depth_offset,
                             rim: drawn.rim,
                             uv: drawn.uv,
                             ..program::Instance::default()
@@ -1298,7 +1300,7 @@ pub(crate) fn batches(
                     textures: textures.to_vec(),
                     blend,
                     def,
-                    shading: effect.shading(def)?,
+                    shading,
                     vertices,
                     instances,
                 },
