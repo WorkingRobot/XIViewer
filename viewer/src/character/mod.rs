@@ -25,8 +25,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use egui::{
-    Align, CentralPanel, Color32, Layout, Popup, RectAlign, RichText, ScrollArea, TextEdit,
-    containers::panel::Panel,
+    Align, CentralPanel, CollapsingHeader, Color32, Layout, Popup, RectAlign, RichText,
+    ScrollArea, TextEdit, containers::panel::Panel,
 };
 use glam::{Mat4, Vec3};
 use ironworks::excel::Language;
@@ -52,6 +52,9 @@ pub(super) const DEFORMERS: &str = "chara/xls/boneDeformer/human.pbd";
 /// How big a set's icon is drawn, and how far apart the grid sets them.
 const ICON: f32 = 40.0;
 const GAP: f32 = 4.0;
+/// How many rows an icon menu shows before it scrolls, so a long one (a hairstyle) does not push
+/// everything under it down the panel.
+const ICON_ROWS: usize = 3;
 
 /// How big a piece of equipment's icon is drawn beside its name, and how many of them a slot's
 /// picker shows at once.
@@ -1658,13 +1661,21 @@ impl CharacterBuilder {
                     .as_ref()
                     .is_some_and(|worn| worn.visored(gear.set))
             });
-        // Wrapped rather than run on: a name long enough to run past the panel's own width would
-        // otherwise take it and the view beside it with it. On its own line rather than beside the
-        // visor box, since a wrapped button's height is not known until it is laid out.
-        let button = egui::Button::selectable(open, format!("{}: {worn}", slot.name()))
-            .wrap()
-            .min_size(egui::vec2(ui.available_width(), 0.0));
-        if ui.add(button).clicked() {
+        // Offered on every slot rather than only where a worn piece's material states a dye row:
+        // that is not known until the material has been fetched, and swatches that appear once it
+        // has would move everything under it.
+        let reserve = 2.0 * SWATCH + 2.0 * ui.spacing().item_spacing.x;
+        let mut clicked = false;
+        ui.horizontal(|ui| {
+            let button = egui::Button::selectable(open, format!("{}: {worn}", slot.name()))
+                .truncate()
+                .min_size(egui::vec2((ui.available_width() - reserve).max(0.0), 0.0));
+            clicked = ui.add(button).clicked();
+            for channel in 0..2u8 {
+                self.dye_swatch(ui, slot, channel);
+            }
+        });
+        if clicked {
             self.picking = (!open).then_some(slot);
             if let Some(slot) = self.picking {
                 log::info!("character: picking {}", slot.name());
@@ -1673,15 +1684,6 @@ impl CharacterBuilder {
         if visored {
             ui.checkbox(&mut self.visor, "Visor");
         }
-        // Offered on every slot rather than only where a worn piece's material states a dye row:
-        // that is not known until the material has been fetched, and a swatch that appears once it
-        // has would move everything under it.
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Dye").weak());
-            for channel in 0..2u8 {
-                self.dye_swatch(ui, slot, channel);
-            }
-        });
         if !open {
             return;
         }
@@ -1888,15 +1890,21 @@ impl CharacterBuilder {
         let mut picked = None;
         for (at, menu) in body.menus.iter().enumerate() {
             ui.add_space(8.0);
-            ui.label(RichText::new(&menu.name).strong());
+            let name = RichText::new(&menu.name).strong();
+            if menu.kind != menus::Kind::Slider {
+                ui.label(name.clone());
+            }
             let current = self.choice(menu);
             match menu.kind {
                 menus::Kind::Slider => {
                     let [low, high] = menu.range;
                     let mut held = current.clamp(low, high);
-                    if ui.add(egui::Slider::new(&mut held, low..=high)).changed() {
-                        picked = Some(Pick::Made(menu.customize, held));
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.add(egui::Slider::new(&mut held, low..=high)).changed() {
+                            picked = Some(Pick::Made(menu.customize, held));
+                        }
+                        ui.label(name);
+                    });
                 }
                 menus::Kind::List => {
                     ui.horizontal_wrapped(|ui| {
@@ -1961,49 +1969,83 @@ impl CharacterBuilder {
                         FACE_PAINT_COLOR => self.paint().is_some(),
                         _ => true,
                     };
-                    if worn {
-                        // The half a colour belongs to is the top bit of its own index, so
-                        // switching halves is that bit and nothing else.
-                        let mut half = 0;
-                        if matches!(menu.customize, LIP_COLOR | FACE_PAINT_COLOR) {
-                            half = current / HALF;
-                            ui.horizontal(|ui| {
-                                for (at, name) in [(0, "Dark"), (1, "Light")] {
-                                    if ui.selectable_label(half == at, name).clicked() {
-                                        picked = Some(Pick::Made(
-                                            menu.customize,
-                                            current % HALF + at * HALF,
-                                        ));
-                                    }
+                    // The half a colour belongs to is the top bit of its own index, so switching
+                    // halves is that bit and nothing else.
+                    let mut half = 0;
+                    if worn && matches!(menu.customize, LIP_COLOR | FACE_PAINT_COLOR) {
+                        half = current / HALF;
+                        ui.horizontal(|ui| {
+                            for (at, name) in [(0, "Dark"), (1, "Light")] {
+                                if ui.selectable_label(half == at, name).clicked() {
+                                    picked = Some(Pick::Made(
+                                        menu.customize,
+                                        current % HALF + at * HALF,
+                                    ));
                                 }
-                            });
-                        }
-                        let offered = half * HALF..half * HALF + menu.count;
-                        if let Some(index) =
-                            colors(ui, ("character_colors", at), swatches, offered, current)
-                        {
-                            picked = Some(Pick::Made(menu.customize, index));
-                        }
+                            }
+                        });
                     }
                     // A second colour the creator only offers once its own box is ticked: a strand
-                    // is mixed between two hair colours, and an eye takes one each.
+                    // is mixed between two hair colours, and an eye takes one each. Shown beside
+                    // the first where there is room for both rather than under it.
                     let paired = match menu.customize {
                         HAIR_COLOR => Some((HIGHLIGHTS, HIGHLIGHT_COLOR, "Highlights", &palettes.highlights)),
                         EYE_COLOR => Some((ODD_EYES, LEFT_EYE_COLOR, "Odd eyes", &palettes.eyes)),
                         _ => None,
                     };
-                    if let Some((box_of, color, name, second)) = paired {
+                    let grid_width = palette::COLUMNS as f32 * (SWATCH + 2.0);
+                    let side_by_side = worn
+                        && paired.is_some()
+                        && ui.available_width() >= 2.0 * grid_width + ui.spacing().item_spacing.x;
+                    if side_by_side {
+                        let (box_of, color, name, second) = paired.unwrap();
                         let mut on = self.ticked(box_of);
-                        if ui.checkbox(&mut on, name).changed() {
-                            picked = Some(Pick::Made(box_of, u32::from(on)));
-                        }
-                        if on {
-                            let held = self.held(color);
-                            let offered = 0..menu.count;
-                            if let Some(index) =
-                                colors(ui, ("character_second", at), second, offered, held)
-                            {
+                        let offered = half * HALF..half * HALF + menu.count;
+                        ui.columns(2, |columns| {
+                            if let Some(index) = colors(
+                                &mut columns[0],
+                                ("character_colors", at),
+                                swatches,
+                                offered,
+                                current,
+                            ) {
+                                picked = Some(Pick::Made(menu.customize, index));
+                            }
+                            if columns[1].checkbox(&mut on, name).changed() {
+                                picked = Some(Pick::Made(box_of, u32::from(on)));
+                            }
+                            if on && let Some(index) = colors(
+                                &mut columns[1],
+                                ("character_second", at),
+                                second,
+                                0..menu.count,
+                                self.held(color),
+                            ) {
                                 picked = Some(Pick::Made(color, index));
+                            }
+                        });
+                    } else {
+                        if worn {
+                            let offered = half * HALF..half * HALF + menu.count;
+                            if let Some(index) =
+                                colors(ui, ("character_colors", at), swatches, offered, current)
+                            {
+                                picked = Some(Pick::Made(menu.customize, index));
+                            }
+                        }
+                        if let Some((box_of, color, name, second)) = paired {
+                            let mut on = self.ticked(box_of);
+                            if ui.checkbox(&mut on, name).changed() {
+                                picked = Some(Pick::Made(box_of, u32::from(on)));
+                            }
+                            if on {
+                                let held = self.held(color);
+                                let offered = 0..menu.count;
+                                if let Some(index) =
+                                    colors(ui, ("character_second", at), second, offered, held)
+                                {
+                                    picked = Some(Pick::Made(color, index));
+                                }
                             }
                         }
                     }
@@ -2014,11 +2056,17 @@ impl CharacterBuilder {
                     let choices: Vec<Choice> = (0..menu.count)
                         .map(|index| self.choice_of(menu, index))
                         .collect();
-                    grid(ui, &format!("character_menu_{at}"), &choices, |ui, held| {
-                        chip(ui, backend, icons, held, u32::from(held.id) == current)
-                            .then_some(Pick::Choice(menu.customize, held.id))
-                    })
-                    .inspect(|choice| picked = Some(*choice));
+                    ScrollArea::vertical()
+                        .id_salt(("character_menu_scroll", menu.customize))
+                        .max_height((ICON + GAP) * ICON_ROWS as f32)
+                        .show(ui, |ui| {
+                            grid(ui, &format!("character_menu_{at}"), &choices, |ui, held| {
+                                chip(ui, backend, icons, held, u32::from(held.id) == current)
+                                    .then_some(Pick::Choice(menu.customize, held.id))
+                            })
+                        })
+                        .inner
+                        .inspect(|choice| picked = Some(*choice));
                 }
             }
         }
@@ -2028,13 +2076,9 @@ impl CharacterBuilder {
     /// The game's own characters, searched by name. Picking one is picking everything at once: it
     /// carries the whole of what the creator would have been left at, plus what it is wearing.
     fn npcs_ui(&mut self, ui: &mut egui::Ui) -> Option<Pick> {
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Stand in for").strong());
-            if self.reading_npcs.is_some() {
-                ui.spinner();
-            }
-        });
+        if self.reading_npcs.is_some() {
+            ui.spinner();
+        }
         ui.add(
             TextEdit::singleline(&mut self.npc_search)
                 .hint_text("Search")
@@ -2091,13 +2135,9 @@ impl CharacterBuilder {
         backend: &Backend,
         icons: &IconManager,
     ) -> Option<Pick> {
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Emote").strong());
-            if self.reading_emotes.is_some() {
-                ui.spinner();
-            }
-        });
+        if self.reading_emotes.is_some() {
+            ui.spinner();
+        }
         ui.add(
             TextEdit::singleline(&mut self.emote_search)
                 .hint_text("Search")
@@ -2134,13 +2174,9 @@ impl CharacterBuilder {
         backend: &Backend,
         icons: &IconManager,
     ) -> Option<Pick> {
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Mount").strong());
-            if self.reading_mounts.is_some() {
-                ui.spinner();
-            }
-        });
+        if self.reading_mounts.is_some() {
+            ui.spinner();
+        }
         ui.add(
             TextEdit::singleline(&mut self.mount_search)
                 .hint_text("Search")
@@ -2526,20 +2562,22 @@ impl CharacterBuilder {
                     }
                     if let Some(listing) = &listing {
                         ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("Equipment").strong());
+                        section(ui, "Equipment", |ui| {
                             if self.reading_pieces.is_some() {
                                 ui.spinner();
                             }
+                            for slot in Slot::GEAR {
+                                self.slot_ui(ui, backend, icons, listing, slot);
+                            }
+                            None
                         });
-                        for slot in Slot::GEAR {
-                            self.slot_ui(ui, backend, icons, listing, slot);
-                        }
                         ui.add_space(8.0);
-                        ui.label(RichText::new("Accessories").strong());
-                        for slot in Slot::ADORNMENT {
-                            self.slot_ui(ui, backend, icons, listing, slot);
-                        }
+                        section(ui, "Accessories", |ui| {
+                            for slot in Slot::ADORNMENT {
+                                self.slot_ui(ui, backend, icons, listing, slot);
+                            }
+                            None
+                        });
                     }
                     // Beside the weapon's own sheathed and drawn, since both say what the body is
                     // doing rather than what it is wearing, and neither wants to sit under a list.
@@ -2547,13 +2585,18 @@ impl CharacterBuilder {
                         .inspect(|posture| picked = Some(*posture));
                     self.weapons_ui(ui, backend, icons)
                         .inspect(|pick| picked = Some(*pick));
-                    self.appearance(ui, backend, icons)
+                    ui.add_space(8.0);
+                    section(ui, "Customization", |ui| self.appearance(ui, backend, icons))
                         .inspect(|made| picked = Some(*made));
-                    self.emotes_ui(ui, backend, icons)
+                    ui.add_space(8.0);
+                    section(ui, "Emote", |ui| self.emotes_ui(ui, backend, icons))
                         .inspect(|emote| picked = Some(*emote));
-                    self.mounts_ui(ui, backend, icons)
+                    ui.add_space(8.0);
+                    section(ui, "Mount", |ui| self.mounts_ui(ui, backend, icons))
                         .inspect(|mount| picked = Some(*mount));
-                    self.npcs_ui(ui).inspect(|npc| picked = Some(*npc));
+                    ui.add_space(8.0);
+                    section(ui, "Stand in for", |ui| self.npcs_ui(ui))
+                        .inspect(|npc| picked = Some(*npc));
                 });
                 picked
             })
@@ -3056,6 +3099,19 @@ fn listed<'a>(
             }
         });
     picked
+}
+
+/// A collapsing section that starts open, so nothing looks different until it is folded.
+fn section(
+    ui: &mut egui::Ui,
+    title: &str,
+    body: impl FnOnce(&mut egui::Ui) -> Option<Pick>,
+) -> Option<Pick> {
+    CollapsingHeader::new(title)
+        .default_open(true)
+        .show(ui, body)
+        .body_returned
+        .flatten()
 }
 
 /// Sets to pick from, laid out as many to a row as the panel is wide enough for. Every cell is the
