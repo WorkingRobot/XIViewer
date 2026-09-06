@@ -1650,14 +1650,13 @@ impl Default for Fog {
 }
 
 impl Fog {
-    /// Where the table stops changing, which is the later of the two channels' own saturations. One
-    /// climbing at nothing never saturates and stands for nothing here.
+    /// Where the table stops: the later of where the opacity saturates and where the sky blend
+    /// sets off. A channel climbing at nothing stands for nothing here. The blend goes on climbing
+    /// past the end rather than saturating inside it, so its own reach is no bound on the table.
     pub fn far(&self) -> f32 {
-        let held = |from: f32, over: f32, rate: f32| (rate > 0.0).then(|| from + over / rate);
-        held(self.start, self.cap, self.rate)
-            .into_iter()
-            .chain(held(self.fade, 1.0, self.blend))
-            .fold(self.start, f32::max)
+        let saturates = (self.rate > 0.0).then(|| self.start + self.cap / self.rate);
+        let fades = (self.blend > 0.0).then_some(self.fade);
+        saturates.into_iter().chain(fades).fold(self.start, f32::max)
     }
 
     /// The table itself, two channels a texel: how opaque the fog is at that distance, and how far
@@ -4322,7 +4321,8 @@ mod test {
 
     use super::{
         ADAPT_LUM_PARAM, ATLAS_COLUMNS, ATLAS_ROWS, Ambient, Buffer, CLOUD_SHADOW_MATRIX, Customize,
-        DECAL, DIRECTIONAL_SHADOW_PARAM, Exposure, FOG_PARAM, FXAA_PARAM, Fog, HDAO_PARAM, INSTANCE,
+        DECAL, DIRECTIONAL_SHADOW_PARAM, Exposure, FOG_PARAM, FOG_TABLE, FXAA_PARAM, Fog, HDAO_PARAM,
+        INSTANCE,
         INSTANCING, JOINT, REFLECTION_PARAM, ROW, SETTLE, SHADER_TYPE, SHADOW_MAP, SPLITS,
         SUN_PARAM, WAVING, WIND_POWER_SCALE, Pass, Reflect, Scene, Sky, Volume, Wind, WindLayer,
         ambient, decal_field, encode, instance_fields, joints, moon_phase, moon_roll, moon_softness,
@@ -5289,5 +5289,32 @@ mod test {
         // A clock long enough to have wrapped stays inside the texture rather than drifting off it.
         let far = held(30.0 * 512.0 / 8.0 + 30.0);
         assert!((far[5] - (8.0 / 512.0)).abs() < 1e-3, "{}", far[5]);
+    }
+
+    /// Copperbell weather 2, against the buffers and the table the game itself drew there.
+    #[test]
+    fn fog_table_spans_what_the_game_states() {
+        let held = Fog {
+            color: Vec3::new(99.0, 124.0, 153.0) / 255.0,
+            cap: 1.0,
+            rate: 3.0 / 1000.0,
+            blend: 1.0 / 7400.0,
+            start: 0.0,
+            fade: 1000.0,
+            ..Default::default()
+        };
+        // The sky blend sets off at the fade, past where the opacity has already capped, so the
+        // table runs out to it rather than to the nearer saturation.
+        assert_eq!(held.far(), 1000.0);
+        // What the pass reads a distance off the table with: the game wrote 0.000996 and 0.001953.
+        let texel = 1.0 / FOG_TABLE as f32;
+        let scale = (1.0 - texel) / (held.far() - held.start);
+        assert!((scale - 0.000_996_094).abs() < 5e-9, "{scale}");
+        assert!((texel * 0.5 - scale * held.start - 0.001_953_125).abs() < 5e-9);
+        // Its own table saturates at texel 85 and never blends toward the sky, as the game's did.
+        let table = held.table();
+        let opacity: Vec<f32> = table.iter().step_by(2).copied().collect();
+        assert_eq!(opacity.iter().position(|held| *held >= 1.0), Some(85));
+        assert!(table.iter().skip(1).step_by(2).all(|held| *held == 0.0));
     }
 }
