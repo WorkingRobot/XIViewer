@@ -1181,10 +1181,15 @@ fn facing(drawn: &sim::Drawn, eye: Vec3, right: Vec3, up: Vec3) -> (Vec3, Vec3) 
         )
     };
     match drawn.facing {
+        // Billed about the particle's own axis rather than about the camera's up: two captures of
+        // one emote hold the two lightsticks at opposite diagonals and each glow runs along its own
+        // stick, where a bill taken about the camera would stand both of them the same way up. The
+        // turn already carries every angle the file states, so there is no roll to lay over it.
         sim::Facing::Camera => {
+            let axis = (glam::Quat::from_array(drawn.turn) * Vec3::Y).normalize_or(Vec3::Y);
             let away = (eye - Vec3::from(drawn.center)).normalize_or(-Vec3::Z);
-            let across = up.cross(away).normalize_or(right);
-            spun(across, away.cross(across))
+            let across = axis.cross(away).normalize_or(right);
+            (across * scale.x, axis * scale.y)
         }
         // Standing upright is the whole of what this one asks for, so it takes no turn: a roll would
         // lean the quad off the axis it is billed about. Which of the two bills a sprite takes went
