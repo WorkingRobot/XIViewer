@@ -24,6 +24,7 @@ pub(crate) mod material;
 mod noise;
 pub(super) mod program;
 mod skin;
+mod wield;
 
 pub use deform::{Deform, Deformers};
 pub use skin::motion_names;
@@ -517,6 +518,11 @@ pub struct Rendered {
     /// The effect a drawn weapon plays and the bone it hangs from, one pair a weapon, with the
     /// clock it started running on.
     glowing: RefCell<Vec<(String, String)>>,
+    /// The rig each carried weapon moves on, whether they are drawn, and the frame clock kept from
+    /// the poll so the pose can read it without a context of its own.
+    wield: RefCell<wield::Wield>,
+    wielded: std::cell::Cell<bool>,
+    wall: std::cell::Cell<f64>,
     glowing_at: std::cell::Cell<Option<f64>>,
     /// The props, sound and vfx an emote's own timeline states, read against whatever the body is
     /// playing.
@@ -614,6 +620,9 @@ pub fn compose(parts: &[Source]) -> Result<Rendered> {
         dyed: Default::default(),
         attachments: Default::default(),
         glowing: Default::default(),
+        wield: Default::default(),
+        wielded: Default::default(),
+        wall: Default::default(),
         glowing_at: Default::default(),
         emote: Default::default(),
         effects: Default::default(),
@@ -1666,6 +1675,16 @@ impl Rendered {
             self.effects
                 .borrow_mut()
                 .poll(ctx, backend, &self.fired.borrow());
+            self.wall.set(ctx.input(|input| input.time));
+            let worn: Vec<(u16, u16)> = self
+                .attachments
+                .borrow()
+                .iter()
+                .filter_map(|held| wield::worn(&held.path))
+                .collect();
+            self.wield
+                .borrow_mut()
+                .poll(backend, &worn, self.wielded.get(), self.wall.get());
         }
         let mut slots = self.slots.borrow_mut();
         for (index, slot) in slots.iter_mut().enumerate() {
@@ -2227,11 +2246,26 @@ impl Rendered {
                     // A prop that ships a pack of its own is skinned to a rig of its own, walked
                     // by that pack and carried whole to the point it hangs from: that is what puts
                     // one of the two things it holds in each hand.
-                    pose.joints[index] = match self.animation.body_playing().and_then(|(_, _, time)| {
-                        self.emote
-                            .borrow()
-                            .joints(&attachment.path, &level.bones[index], time)
-                    }) {
+                    // A prop moves out of the emote's own timeline; a weapon moves out of the pack
+                    // its set ships, off the stance rather than off any motion the body plays.
+                    let moved = self
+                        .animation
+                        .body_playing()
+                        .and_then(|(_, _, time)| {
+                            self.emote
+                                .borrow()
+                                .joints(&attachment.path, &level.bones[index], time)
+                        })
+                        .or_else(|| {
+                            let (set, base) = wield::worn(&attachment.path)?;
+                            self.wield.borrow().joints(
+                                set,
+                                base,
+                                &level.bones[index],
+                                self.wall.get(),
+                            )
+                        });
+                    pose.joints[index] = match moved {
                         Some(joints) => joints.iter().map(|joint| carried * *joint).collect(),
                         None => vec![carried; level.bones[index].len()],
                     };
@@ -3421,7 +3455,8 @@ impl Rendered {
     /// Which pieces hang rigidly off a bone this frame rather than posing on the shared rig, each
     /// by the path it was worn as, the bone it hangs from, and its own placement relative to that
     /// bone. Replaces whatever was carried last frame outright: a weapon put away carries nothing.
-    pub fn carried(&self, pieces: Vec<(String, String, Mat4)>) {
+    pub fn carried(&self, pieces: Vec<(String, String, Mat4)>, drawn: bool) {
+        self.wielded.set(drawn);
         *self.attachments.borrow_mut() = pieces
             .into_iter()
             .map(|(path, bone, local)| Attachment { path, bone, local })

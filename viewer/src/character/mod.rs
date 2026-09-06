@@ -999,7 +999,7 @@ impl CharacterBuilder {
             let sheathing = model.acting().is_some_and(|name| name == stance::SHEATHE);
             let carried = self.attachments(self.drawn || sheathing);
             model.glowing(self.effects(&carried));
-            model.carried(carried);
+            model.carried(carried, self.drawn);
             if let Some(stance) = self.stance.clone() {
                 model.blending(move |from, to| stance.fade(from, to));
             }

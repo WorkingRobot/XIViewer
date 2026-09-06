@@ -63,13 +63,14 @@ fn prop_model(set: u16, base: u16) -> String {
     format!("chara/weapon/w{set:04}/obj/body/b{base:04}/model/w{set:04}b{base:04}.mdl")
 }
 
-/// The rig a prop is skinned to, filed beside its model.
-fn prop_skeleton(set: u16, base: u16) -> String {
+/// The rig a weapon is skinned to, filed beside its model. A prop is a weapon model, so a prop
+/// takes the same one.
+pub(super) fn weapon_skeleton(set: u16, base: u16) -> String {
     format!("chara/weapon/w{set:04}/skeleton/base/b{base:04}/skl_w{set:04}b{base:04}.sklb")
 }
 
-/// The pack a prop moves out of, which is the one every weapon of that set shares.
-fn prop_pack(set: u16) -> String {
+/// The pack a weapon moves out of, which is the one every weapon of that set shares.
+pub(super) fn weapon_pack(set: u16) -> String {
     format!("chara/weapon/w{set:04}/animation/a0001/wp_common/resident/weapon.pap")
 }
 
@@ -282,7 +283,7 @@ impl Events {
 /// A prop's own rig: the skeleton it is skinned to, and the pack that walks its bones through the
 /// emote. A prop that puts one thing in each hand is one model on this rig rather than two hung
 /// apart, so which hand each of its bones ends up in is the pack's to say, not the attach point's.
-struct Rigging {
+pub(super) struct Rigging {
     rig: Rig,
     /// Animation names, each with the motion it plays.
     named: Vec<(String, usize)>,
@@ -292,7 +293,7 @@ struct Rigging {
 }
 
 impl Rigging {
-    fn read(skeleton: &[u8], pack: &[u8]) -> anyhow::Result<Self> {
+    pub(super) fn read(skeleton: &[u8], pack: &[u8]) -> anyhow::Result<Self> {
         let held = SkeletonBinary::read(Cursor::new(skeleton.to_vec()))?.parse_skeleton()?;
         let rig = Rig::new(held.bones(), held.parent_indices(), held.reference_pose());
         let file = AnimationPack::read(Cursor::new(pack.to_vec()))?;
@@ -338,8 +339,19 @@ impl Rigging {
             })
     }
 
+    /// Which of the pack's animations is spelled exactly `name`.
+    pub(super) fn named(&self, name: &str) -> Option<usize> {
+        self.named.iter().position(|(held, _)| held == name)
+    }
+
+    /// How long one of them runs.
+    pub(super) fn duration(&self, motion: usize) -> Option<f32> {
+        let binding = self.bindings.get(self.named.get(motion)?.1)?;
+        Some(binding.motion().duration().max(f32::EPSILON))
+    }
+
     /// What each slot of the model's own bone table moves a vertex by, in the prop's own space.
-    fn joints(&self, motion: usize, table: &[String], time: f32) -> Option<Vec<Mat4>> {
+    pub(super) fn joints(&self, motion: usize, table: &[String], time: f32) -> Option<Vec<Mat4>> {
         let binding = self.bindings.get(self.named.get(motion)?.1)?;
         let mut locals = self.rig.reference().to_vec();
         self.rig
@@ -525,7 +537,7 @@ impl Cue {
         };
         if self.rigged.as_ref().is_none_or(|(worn, _)| *worn != (set, base)) {
             let files = backend.files().clone();
-            let (skeleton, pack) = (prop_skeleton(set, base), prop_pack(set));
+            let (skeleton, pack) = (weapon_skeleton(set, base), weapon_pack(set));
             self.rigged = Some((
                 (set, base),
                 Rigged::Fetching(TrackedPromise::spawn_local(async move {
@@ -632,8 +644,8 @@ mod tests {
         assert_eq!((prop.set, prop.base), (1949, 1));
 
         let rigging = Rigging::read(
-            &read(&prop_skeleton(prop.set, prop.base)),
-            &read(&prop_pack(prop.set)),
+            &read(&weapon_skeleton(prop.set, prop.base)),
+            &read(&weapon_pack(prop.set)),
         )
         .expect("the prop's own rig");
         let motion = rigging
