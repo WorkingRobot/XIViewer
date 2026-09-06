@@ -182,6 +182,7 @@ web-sys = { version = "0.3", features = [
     "HtmlAudioElement",
     "EventTarget",
     "Navigator",
+    "Clipboard",
     "MediaSession",
     "MediaMetadata",
     "MediaSessionAction",

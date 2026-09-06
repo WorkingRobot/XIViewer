@@ -856,9 +856,9 @@ pub struct Scene {
     /// rather than forgotten: dropping a promise cancels the future behind it.
     picking: Option<TrackedPromise<Option<Vec<u8>>>>,
     /// Whether "From clipboard" is waiting on the next `Event::Paste` to land: egui has no
-    /// synchronous clipboard read. Native answers `RequestPaste` with one a frame later; the web
-    /// target wires nothing up to the browser's own clipboard API, so there this waits on a real
-    /// Ctrl+V instead.
+    /// synchronous clipboard read. Native answers `RequestPaste` with one a frame later. The web
+    /// backend leaves that command unimplemented, so there the browser's clipboard is read
+    /// directly and this only ever catches a real Ctrl+V.
     awaiting_paste: bool,
     saving: Option<TrackedPromise<()>>,
     /// Where the eye stood when the instance buffers were last written.
@@ -4762,7 +4762,7 @@ impl Scene {
             section(ui, "View");
             ui.columns_const(|[c1, c2]| {
                 c1.vertical_centered_justified(|ui| {
-                    MenuButton::from_button(egui::Button::new("Import ▾")).ui(ui, |ui| {
+                    MenuButton::from_button(egui::Button::new("Import Preset")).ui(ui, |ui| {
                         if ui.button("From file").clicked() {
                             self.picking = Some(TrackedPromise::spawn_local(async {
                                 let held = rfd::AsyncFileDialog::new()
@@ -4775,8 +4775,23 @@ impl Scene {
                             ui.close();
                         }
                         if ui.button("From clipboard").clicked() {
-                            self.awaiting_paste = true;
-                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                self.awaiting_paste = true;
+                                ui.ctx()
+                                    .send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                            }
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                self.picking = Some(TrackedPromise::spawn_local(async {
+                                    let held = web_sys::window()?.navigator().clipboard();
+                                    let text =
+                                        wasm_bindgen_futures::JsFuture::from(held.read_text())
+                                            .await
+                                            .ok()?;
+                                    Some(text.as_string()?.into_bytes())
+                                }));
+                            }
                             ui.close();
                         }
                     });
@@ -4786,7 +4801,7 @@ impl Scene {
                         ui.spinner();
                     }
                     ui.add_enabled_ui(self.saving.is_none(), |ui| {
-                        MenuButton::from_button(egui::Button::new("Export ▾")).ui(ui, |ui| {
+                        MenuButton::from_button(egui::Button::new("Export Preset")).ui(ui, |ui| {
                             let held = preset::Preset::of(
                                 &self.path,
                                 self.camera.position,
