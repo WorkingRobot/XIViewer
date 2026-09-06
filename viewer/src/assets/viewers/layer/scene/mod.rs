@@ -2635,12 +2635,10 @@ impl Scene {
             // Relative to when the effect arrived, so its own timeline starts at zero there rather
             // than at the clock's zero. An unbounded one is left running past `length` rather than
             // wrapped back to it.
-            let elapsed = frame - *born;
-            let target = match parsed.bounded {
-                true => elapsed.rem_euclid(parsed.length.max(1)),
-                false => elapsed,
-            };
-            parsed.seek(live, target);
+            // Climbing rather than wrapped: the simulation runs the schedule again each period
+            // itself, where seeking backward here would throw away every particle still in the air.
+            let period = parsed.bounded.then(|| parsed.length.max(1));
+            parsed.seek_cycling(live, frame - *born, period);
         }
 
         // A firing runs once rather than over and over: the host says when it started, so it plays

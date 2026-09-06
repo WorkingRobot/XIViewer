@@ -1283,15 +1283,22 @@ impl Effect {
     /// Steps to `frame`, replaying from the start where the state sits past it: a particle's
     /// position is the sum of every step it has taken, so there is no stepping backwards.
     pub fn seek(&self, state: &mut State, frame: i32) {
+        self.seek_cycling(state, frame, None);
+    }
+
+    /// The same, for a caller that wants the schedule run again every `period` frames rather than
+    /// once: what is already in the air carries across the seam, which wrapping the frame would
+    /// throw away.
+    pub fn seek_cycling(&self, state: &mut State, frame: i32, period: Option<i32>) {
         if frame < state.frame {
             *state = State::default();
         }
         while state.frame < frame {
-            self.step(state);
+            self.step(state, period);
         }
     }
 
-    fn step(&self, state: &mut State) {
+    fn step(&self, state: &mut State, period: Option<i32>) {
         let frame = state.frame + 1;
         state.frame = frame;
 
@@ -1307,12 +1314,16 @@ impl Effect {
             true
         });
 
+        let cycle = match period.filter(|held| *held > 0) {
+            Some(period) => (frame - 1).rem_euclid(period) + 1,
+            None => frame,
+        };
         for run in &self.runs {
-            if run.start == frame && state.running.len() < EMITTERS {
+            if run.start == cycle && state.running.len() < EMITTERS {
                 state.running.push(Running {
                     def: run.emitter,
                     born: frame,
-                    until: run.until,
+                    until: frame + (run.until - run.start),
                     place: Place::NONE,
                     tint: Vec4::ONE,
                     since: f32::INFINITY,
@@ -1481,7 +1492,7 @@ impl Effect {
         let mut state = State::default();
         let (mut low, mut high) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         for _ in 0..self.length.min(FITTED) {
-            self.step(&mut state);
+            self.step(&mut state, None);
             for live in &state.particles {
                 let def = &self.particles[live.def];
                 let age = (state.frame - live.born) as f32;
