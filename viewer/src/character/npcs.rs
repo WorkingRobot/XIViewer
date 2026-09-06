@@ -135,8 +135,10 @@ pub struct Npc {
     /// What each of the creator's menus was left at, by the `Customize` it drives.
     pub choices: Vec<(u32, u32)>,
     pub outfit: Outfit,
-    /// What each of `Slot::ALL` is dyed, one id per channel a modern item can carry.
-    pub stains: [[Option<u8>; 2]; 10],
+    /// What each of `Slot::ALL` is dyed, one id per channel a modern item can carry. `ENpcBase` and
+    /// `NpcEquip` state ten quads, not eleven: an NPC never wears facewear, so that slot is always
+    /// `None` here rather than read from anything.
+    pub stains: [[Option<u8>; 2]; 11],
 }
 
 /// What a character id builds.
@@ -181,9 +183,9 @@ fn choices(row: &ExcelRow<'_>, at: u32) -> Vec<(u32, u32)> {
 }
 
 /// What a row dresses each slot in, and what each is dyed.
-fn worn(row: &ExcelRow<'_>, held: &Wearing) -> (Outfit, [[Option<u8>; 2]; 10]) {
-    let mut outfit = [None; 10];
-    let mut stains = [[None; 2]; 10];
+fn worn(row: &ExcelRow<'_>, held: &Wearing) -> (Outfit, [[Option<u8>; 2]; 11]) {
+    let mut outfit = [None; 11];
+    let mut stains = [[None; 2]; 11];
     for slot in 0..10u32 {
         outfit[slot as usize] = row
             .read::<u32>(held.models + slot * 4)
@@ -210,8 +212,8 @@ fn human(row: &ExcelRow<'_>, at: u32, name: String) -> Option<Npc> {
         female: gender != 0,
         child: byte(BODY) == CHILD,
         choices: choices(row, at),
-        outfit: [None; 10],
-        stains: [[None; 2]; 10],
+        outfit: [None; 11],
+        stains: [[None; 2]; 11],
     })
 }
 

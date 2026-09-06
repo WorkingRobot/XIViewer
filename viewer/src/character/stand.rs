@@ -581,7 +581,7 @@ impl Build {
         let mut arrived = super::Outfit::default();
         for slot in Slot::ALL {
             let held = npc.outfit[slot as usize].and_then(|gear| {
-                let path = equipment(listing, deformers, self.code, slot.adornment(), gear.set)
+                let path = equipment(listing, deformers, self.code, slot.filed(), gear.set)
                     [slot as usize]
                     .clone()?;
                 Some((path, gear))

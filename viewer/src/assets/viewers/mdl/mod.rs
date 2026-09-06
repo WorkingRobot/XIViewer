@@ -2640,11 +2640,15 @@ impl Rendered {
             debug: self.debug.get(),
             grid,
             // The emote's own particles, drawn inside the frame rather than over the widget: only
-            // there is the depth the character settled still attached to be tested against.
+            // there is the depth the character settled still attached to be tested against. On the
+            // game's own clip depth, since these are game shaders and the soft-particle variant
+            // rebuilds a world position out of that same depth buffer: handed a GL projection it
+            // reads every depth half a range out, puts the scene surface on top of the particle and
+            // discards it, so an effect vanishes wherever anything at all stands behind it.
             effects: std::sync::Mutex::new(self.effects.borrow().frames(
                 &self.fired.borrow(),
                 view,
-                projection,
+                held,
                 (rect.width(), rect.height()),
                 eye,
             )),

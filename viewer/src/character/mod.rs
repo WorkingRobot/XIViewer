@@ -123,8 +123,11 @@ const SWATCH: f32 = 18.0;
 /// Smallclothes, which is what everything else is worn over.
 const SMALLCLOTHES: Gear = Gear { set: 0, variant: 1 };
 
+/// The directory and letter a slot's models are filed under, as [`Slot::filed`] answers it.
+type Filed = (&'static str, char);
+
 /// A slot a character wears something in, as the file names abbreviate it. The five it is dressed
-/// in come first, in the order every sheet states them, and the five it is adorned with after.
+/// in come first, in the order every sheet states them, and what it is adorned with after.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Slot {
     Head,
@@ -137,20 +140,23 @@ pub enum Slot {
     Wrists,
     RingLeft,
     RingRight,
+    Facewear,
 }
 
 impl Slot {
     /// The five a body is dressed in.
     pub const GEAR: [Slot; 5] = [Self::Head, Self::Body, Self::Hands, Self::Legs, Self::Feet];
-    /// The five it is adorned with, which are filed apart from the gear and hide nothing of it.
-    pub const ADORNMENT: [Slot; 5] = [
+    /// What it is adorned with beyond its gear, which hides nothing of it. Every one but facewear
+    /// is filed apart from the gear as well; facewear is not, sharing the head's own listing.
+    pub const ADORNMENT: [Slot; 6] = [
         Self::Ears,
         Self::Neck,
         Self::Wrists,
         Self::RingLeft,
         Self::RingRight,
+        Self::Facewear,
     ];
-    pub const ALL: [Slot; 10] = [
+    pub const ALL: [Slot; 11] = [
         Self::Head,
         Self::Body,
         Self::Hands,
@@ -161,6 +167,7 @@ impl Slot {
         Self::Wrists,
         Self::RingLeft,
         Self::RingRight,
+        Self::Facewear,
     ];
     /// The slots a race has clothing of its own for, in the order `Race` states them.
     pub const RACIAL: [Slot; 4] = [Self::Body, Self::Hands, Self::Legs, Self::Feet];
@@ -177,12 +184,15 @@ impl Slot {
             Self::Wrists => "Wrists",
             Self::RingLeft => "Left ring",
             Self::RingRight => "Right ring",
+            Self::Facewear => "Facewear",
         }
     }
 
     fn suffix(self) -> &'static str {
         match self {
-            Self::Head => "met",
+            // Facewear shares the head's own suffix: the game resolves it through the same fixed
+            // entry of the suffix table `ResolveMdlPath` loads for a head set.
+            Self::Head | Self::Facewear => "met",
             Self::Body => "top",
             Self::Hands => "glv",
             Self::Legs => "dwn",
@@ -195,10 +205,20 @@ impl Slot {
         }
     }
 
-    /// Whether a set worn here is filed as an accessory rather than as equipment, which is both
-    /// the directory it sits in and the letter its models are named with.
+    /// Whether this is one of the pieces worn over the gear rather than the gear itself: it hides
+    /// nothing under it, has no attire default, and shows "None" rather than "Bare" where its
+    /// picker is empty.
     pub(super) fn adornment(self) -> bool {
         Self::ADORNMENT.contains(&self)
+    }
+
+    /// The directory and letter a worn set here is filed under. Facewear is the one adornment that
+    /// files as plain equipment rather than as an accessory.
+    pub(super) fn filed(self) -> Filed {
+        match self.adornment() && self != Self::Facewear {
+            true => ("accessory", 'a'),
+            false => ("equipment", 'e'),
+        }
     }
 }
 
@@ -219,10 +239,10 @@ impl Gear {
 }
 
 /// What a character wears, by slot.
-pub type Outfit = [Option<Gear>; 10];
+pub type Outfit = [Option<Gear>; 11];
 
 /// The model each slot of one set is worn as, where the code carries one at all.
-type Models = [Option<String>; 10];
+type Models = [Option<String>; 11];
 
 /// What the creator dresses a character in before anything is picked for them.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -263,7 +283,7 @@ pub struct CharacterBuilder {
     /// What the creator offers, and which of its races, clans and genders is being built.
     creator: menus::Creator,
     reading: Option<TrackedPromise<Result<menus::Creator>>>,
-    reading_pieces: Option<TrackedPromise<Result<[Vec<menus::Piece>; 10]>>>,
+    reading_pieces: Option<TrackedPromise<Result<[Vec<menus::Piece>; 11]>>>,
     race: u32,
     tribe: u32,
     female: bool,
@@ -287,10 +307,10 @@ pub struct CharacterBuilder {
     job: usize,
     /// What has been picked by hand for a slot, over whatever the attire puts there, and which
     /// slot's picker is open. Both index [`menus::Creator::pieces`].
-    chosen: [Option<usize>; 10],
+    chosen: [Option<usize>; 11],
     picking: Option<Slot>,
-    search: [String; 10],
-    matched: RefCell<[(Option<String>, Vec<usize>); 10]>,
+    search: [String; 11],
+    matched: RefCell<[(Option<String>, Vec<usize>); 11]>,
     matcher: FuzzyMatcher,
     /// What has been picked for each of the creator's menus, by the `Customize` it drives. A menu
     /// the map says nothing about is at its first choice, which is what the row's own defaults are.
@@ -306,7 +326,7 @@ pub struct CharacterBuilder {
     reading_dye_templates: Option<TrackedPromise<Result<mdl::DyeTemplates>>>,
     /// What has been picked to stain each slot with, one id per channel a modern item can carry.
     /// Zero is the unstained slot, matching a `.stm` template's own numbering.
-    stains: [[Option<u8>; 2]; 10],
+    stains: [[Option<u8>; 2]; 11],
     /// Which slot's dye picker is open, and which of its two channels.
     dyeing: Option<(Slot, u8)>,
     /// What each body differs from the one it is built on by, which is both what says where a
@@ -378,9 +398,10 @@ pub struct CharacterBuilder {
     facial: Option<Rc<Vec<u8>>>,
     reading_facial: Option<TrackedPromise<Result<Vec<u8>>>>,
     /// The models each set is worn as under the current code, by slot. A set number means one
-    /// thing as equipment and another as an adornment, so the two are kept apart. The picker asks
-    /// about every set it lists, and a directory listing is too dear to pay for one on every frame.
-    sets: RefCell<BTreeMap<(bool, u16), Models>>,
+    /// thing filed as equipment and another filed as an accessory, so the two are kept apart. The
+    /// picker asks about every set it lists, and a directory listing is too dear to pay for one on
+    /// every frame.
+    sets: RefCell<BTreeMap<(Filed, u16), Models>>,
     /// The files the model on screen was built from, so a pick that changes nothing costs nothing.
     worn: Vec<(String, u16)>,
     /// The stains each entry of `worn` is dressed in, in the same order: `[None; 2]` for the face,
@@ -428,7 +449,7 @@ impl Default for CharacterBuilder {
             hair: 1,
             attire: Attire::default(),
             job: 0,
-            chosen: [None; 10],
+            chosen: [None; 11],
             picking: None,
             search: Default::default(),
             matched: Default::default(),
@@ -440,7 +461,7 @@ impl Default for CharacterBuilder {
             reading_dyes: None,
             dye_templates: None,
             reading_dye_templates: None,
-            stains: [[None; 2]; 10],
+            stains: [[None; 2]; 11],
             dyeing: None,
             deformers: None,
             reading_deformers: None,
@@ -552,7 +573,7 @@ impl CharacterBuilder {
         self.faces.clear();
         self.hairs.clear();
         // What was picked by hand is where a piece sat in a list that is about to be read again.
-        self.chosen = [None; 10];
+        self.chosen = [None; 11];
         self.matched.take();
         self.sets.borrow_mut().clear();
         self.shaped.borrow_mut().clear();
@@ -1291,7 +1312,7 @@ impl CharacterBuilder {
                 continue;
             };
             let held = sets
-                .get(&(slot.adornment(), gear.set))
+                .get(&(slot.filed(), gear.set))
                 .and_then(|found| found[slot as usize].as_ref())
                 .is_some_and(|path| self.held.contains_key(path));
             if held {
@@ -1357,9 +1378,9 @@ impl CharacterBuilder {
     /// What the character is dressed in: the attire, then anything picked by hand over it, then
     /// the slots those pieces cover themselves, which draw nothing at all rather than falling back
     /// to the body's own model. A slot picked for is never covered, since a pick is an instruction.
-    fn dressed(&self) -> (Outfit, [bool; 10]) {
+    fn dressed(&self) -> (Outfit, [bool; 11]) {
         let mut outfit = self.outfit();
-        let mut hidden = [false; 10];
+        let mut hidden = [false; 11];
         for slot in Slot::ALL {
             if let Some(piece) = self.picked(slot) {
                 outfit[slot as usize] = Some(piece.gear);
@@ -1453,7 +1474,7 @@ impl CharacterBuilder {
             .collect();
         for slot in Slot::ALL {
             let worn = outfit[slot as usize].and_then(|gear| {
-                self.worn_as(listing, deformers, slot.adornment(), gear.set)[slot as usize]
+                self.worn_as(listing, deformers, slot.filed(), gear.set)[slot as usize]
                     .clone()
                     .map(|path| (path, gear.variant, self.stains[slot as usize]))
             });
@@ -1538,14 +1559,14 @@ impl CharacterBuilder {
         &self,
         listing: &Listing,
         deformers: &mdl::Deformers,
-        adornment: bool,
+        filed: Filed,
         set: u16,
     ) -> Ref<'_, Models> {
-        if !self.sets.borrow().contains_key(&(adornment, set)) {
-            let found = equipment(listing, deformers, self.code, adornment, set);
-            self.sets.borrow_mut().insert((adornment, set), found);
+        if !self.sets.borrow().contains_key(&(filed, set)) {
+            let found = equipment(listing, deformers, self.code, filed, set);
+            self.sets.borrow_mut().insert((filed, set), found);
         }
-        Ref::map(self.sets.borrow(), |sets| &sets[&(adornment, set)])
+        Ref::map(self.sets.borrow(), |sets| &sets[&(filed, set)])
     }
 
     /// Puts what has arrived on screen, keeping the character that is already there where there is
@@ -1716,7 +1737,7 @@ impl CharacterBuilder {
                         let index = matched[row];
                         let piece = &self.creator.pieces[at][index];
                         let held = deformers.as_ref().is_none_or(|deformers| {
-                            self.worn_as(listing, deformers, slot.adornment(), piece.gear.set)[at]
+                            self.worn_as(listing, deformers, slot.filed(), piece.gear.set)[at]
                                 .is_some()
                         });
                         let suits = piece.suits(self.race, self.female);
@@ -2654,7 +2675,7 @@ impl CharacterBuilder {
                     self.child = held.child;
                     self.choices = held.choices.iter().copied().collect();
                     self.attire = Attire::Npc;
-                    self.chosen = [None; 10];
+                    self.chosen = [None; 11];
                     self.stains = held.stains;
                     self.stood = false;
                 }
@@ -2992,17 +3013,14 @@ pub(super) fn equipment(
     listing: &Listing,
     deformers: &mdl::Deformers,
     code: u16,
-    adornment: bool,
+    filed: Filed,
     set: u16,
 ) -> Models {
-    let (kind, letter) = match adornment {
-        true => ("accessory", 'a'),
-        false => ("equipment", 'e'),
-    };
+    let (kind, letter) = filed;
     let under = format!("chara/{kind}/{letter}{set:04}/model");
     let held = listing.under(&under);
     Slot::ALL.map(|slot| {
-        if slot.adornment() != adornment {
+        if slot.filed() != filed {
             return None;
         }
         deformers.lineage(code).find_map(|code| {

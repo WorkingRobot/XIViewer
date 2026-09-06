@@ -65,10 +65,16 @@ const ITEM_NAME: u32 = 12;
 const ITEM_ICON: u32 = 136;
 const SLOTS: u32 = 154;
 const RESTRICTION: u32 = 80;
-/// Where `EquipSlotCategory` states each of [`Slot::ALL`]. It runs over every slot the game has, of
-/// which the five a body is dressed in are not adjacent, and it names the left ring ahead of the
-/// right one where the models are named the other way round.
+/// Where `EquipSlotCategory` states each of [`Slot::ALL`] but facewear, which the sheet has no
+/// column for at all. It runs over every slot the game dresses an item in, of which the five a
+/// body is dressed in are not adjacent, and it names the left ring ahead of the right one where
+/// the models are named the other way round.
 const FILLS: [u32; 10] = [2, 3, 4, 6, 7, 8, 9, 10, 11, 12];
+/// `Glasses`' name, model quad and icon. The sheet states no race or gender restriction, so
+/// everything it offers suits every one the game will let wear it at all.
+const GLASSES_NAME: u32 = 12;
+const GLASSES_MODEL: u32 = 24;
+const GLASSES_ICON: u32 = 28;
 /// `EquipRaceCategory`'s eight races, then the two genders packed into one byte after them.
 const WORN_BY: u32 = 0;
 const GENDERS: u32 = 8;
@@ -189,7 +195,7 @@ pub struct Creator {
     pub attire: BTreeMap<(u32, bool), Outfit>,
     pub jobs: Vec<Job>,
     /// Everything there is to wear, by the slot it is worn in.
-    pub pieces: [Vec<Piece>; 10],
+    pub pieces: [Vec<Piece>; 11],
 }
 
 impl Creator {
@@ -288,7 +294,7 @@ pub async fn read(backend: &Backend, language: Language) -> Result<Creator> {
 ///
 /// Read on its own, since walking every item there is takes long enough that waiting for it would
 /// hold up the character it is going to dress.
-pub async fn pieces(backend: &Backend, language: Language) -> Result<[Vec<Piece>; 10]> {
+pub async fn pieces(backend: &Backend, language: Language) -> Result<[Vec<Piece>; 11]> {
     let excel = backend.excel();
     let items = excel.get_sheet("Item", language).await?;
     let categories = excel.get_sheet("EquipSlotCategory", language).await?;
@@ -329,7 +335,7 @@ pub async fn pieces(backend: &Backend, language: Language) -> Result<[Vec<Piece>
         allowed.insert(id, (races, genders));
     }
 
-    let mut found: [Vec<Piece>; 10] = Default::default();
+    let mut found: [Vec<Piece>; 11] = Default::default();
     let mut drawn = Instant::now();
     for id in items.get_row_ids() {
         if drawn.elapsed() >= MAX_FRAME_TIME {
@@ -370,6 +376,35 @@ pub async fn pieces(backend: &Backend, language: Language) -> Result<[Vec<Piece>
             found[*slot].push(piece.clone());
         }
     }
+
+    // A slot of its own: `EquipSlotCategory` has no column for facewear at all, and the game
+    // resolves its model through the plain equipment convention rather than `Item`'s.
+    let glasses = excel.get_sheet("Glasses", language).await?;
+    for id in glasses.get_row_ids() {
+        let Ok(row) = glasses.get_row(id) else {
+            continue;
+        };
+        let Some(gear) = row.read::<u32>(GLASSES_MODEL).ok().map(u64::from).and_then(Gear::read)
+        else {
+            continue;
+        };
+        let Ok(name) = row.read_string(GLASSES_NAME) else {
+            continue;
+        };
+        let name = name.to_string();
+        if name.is_empty() {
+            continue;
+        }
+        found[Slot::Facewear as usize].push(Piece {
+            name,
+            gear,
+            icon: row.read::<u32>(GLASSES_ICON).unwrap_or(0),
+            hides: [false; 10],
+            races: u8::MAX,
+            genders: u8::MAX,
+        });
+    }
+
     for pieces in &mut found {
         pieces.sort_by(|left, right| left.name.cmp(&right.name));
     }
