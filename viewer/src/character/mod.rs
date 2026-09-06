@@ -2060,7 +2060,7 @@ impl CharacterBuilder {
                         .id_salt(("character_menu_scroll", menu.customize))
                         .max_height((ICON + GAP) * ICON_ROWS as f32)
                         .show(ui, |ui| {
-                            grid(ui, &format!("character_menu_{at}"), &choices, |ui, held| {
+                            grid(ui, &format!("character_menu_{}", menu.customize), &choices, |ui, held| {
                                 chip(ui, backend, icons, held, u32::from(held.id) == current)
                                     .then_some(Pick::Choice(menu.customize, held.id))
                             })
