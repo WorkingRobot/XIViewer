@@ -25,8 +25,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use egui::{
-    Align, CentralPanel, CollapsingHeader, Color32, Layout, Popup, RectAlign, RichText,
-    ScrollArea, TextEdit, containers::panel::Panel,
+    Align, CentralPanel, CollapsingHeader, Color32, Layout, Popup, PopupCloseBehavior, RectAlign,
+    RichText, ScrollArea, TextEdit, containers::panel::Panel,
 };
 use glam::{Mat4, Vec3};
 use ironworks::excel::Language;
@@ -74,6 +74,9 @@ const SKIN_COLOR: u32 = 8;
 const EYE_COLOR: u32 = 9;
 const HAIR_COLOR: u32 = 10;
 const FEATURES: u32 = 12;
+/// The top bit of the facial-features byte, which is on wherever a race's tattoo is: the game packs
+/// it beside the seven feature checks rather than offering a menu of its own.
+const LEGACY_TATTOO: u32 = 0x80;
 const TATTOO_COLOR: u32 = 13;
 const LIP_COLOR: u32 = 20;
 pub(super) const FACE_PAINT: u32 = 24;
@@ -327,8 +330,6 @@ pub struct CharacterBuilder {
     /// What has been picked to stain each slot with, one id per channel a modern item can carry.
     /// Zero is the unstained slot, matching a `.stm` template's own numbering.
     stains: [[Option<u8>; 2]; 11],
-    /// Which slot's dye picker is open, and which of its two channels.
-    dyeing: Option<(Slot, u8)>,
     /// What each body differs from the one it is built on by, which is both what says where a
     /// borrowed model comes from and what shapes it onto the body wearing it.
     deformers: Option<Rc<mdl::Deformers>>,
@@ -462,7 +463,6 @@ impl Default for CharacterBuilder {
             dye_templates: None,
             reading_dye_templates: None,
             stains: [[None; 2]; 11],
-            dyeing: None,
             deformers: None,
             reading_deformers: None,
             worn_over: None,
@@ -1684,16 +1684,23 @@ impl CharacterBuilder {
             });
         // Offered on every slot rather than only where a worn piece's material states a dye row:
         // that is not known until the material has been fetched, and swatches that appear once it
-        // has would move everything under it.
-        let reserve = 2.0 * SWATCH + 2.0 * ui.spacing().item_spacing.x;
+        // has would move everything under it. Facewear carries no dye row at all, on any material
+        // any facewear item ships, so it gets no swatches to begin with.
+        let dyeable = slot != Slot::Facewear;
+        let reserve = match dyeable {
+            true => 2.0 * SWATCH + 2.0 * ui.spacing().item_spacing.x,
+            false => 0.0,
+        };
         let mut clicked = false;
         ui.horizontal(|ui| {
             let button = egui::Button::selectable(open, format!("{}: {worn}", slot.name()))
                 .truncate()
                 .min_size(egui::vec2((ui.available_width() - reserve).max(0.0), 0.0));
             clicked = ui.add(button).clicked();
-            for channel in 0..2u8 {
-                self.dye_swatch(ui, slot, channel);
+            if dyeable {
+                for channel in 0..2u8 {
+                    self.dye_swatch(ui, slot, channel);
+                }
             }
         });
         if clicked {
@@ -1829,69 +1836,50 @@ impl CharacterBuilder {
             egui::StrokeKind::Inside,
         );
         let response = response.on_hover_text(dye.map_or("No dye", |dye| dye.name.as_str()));
-        let open = self.dyeing == Some((slot, channel));
-        if response.clicked() {
-            self.dyeing = (!open).then_some((slot, channel));
-        }
-        if !open {
-            return;
-        }
         let mut picked = None;
-        // How many swatches the game's own shelves are wide, and how tight they sit: a shelf
-        // wraps onto a further row past this rather than ever sharing a row with the next, so
-        // nothing forces the popup wider than the widest shelf actually drawn.
-        const COLUMNS: usize = 9;
         const DYE_GAP: f32 = 1.0;
-        // `from_response` alone is always open, closed only by dropping the swatch or a cell's
-        // click below setting `self.dyeing` to `None`: nothing here closes it on an outside click.
-        Popup::from_response(&response)
+        let popup_id = Popup::default_response_id(&response);
+        Popup::from_toggle_button_response(&response)
+            .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
             .align(RectAlign::BOTTOM_START)
             .show(|ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::splat(DYE_GAP);
                 ScrollArea::vertical().max_height(10.0 * (SWATCH + DYE_GAP)).show(ui, |ui| {
-                    egui::Grid::new(("character_dyes", at, channel))
-                        .spacing(egui::Vec2::splat(DYE_GAP))
-                        .show(ui, |ui| {
-                            let mut column = 0;
-                            let mut shade = None;
-                            let mut cell = |ui: &mut egui::Ui,
-                                            color,
-                                            metallic,
-                                            name: &str,
-                                            hit: Option<u8>,
-                                            at_shade: Option<u8>| {
-                                if column > 0 && (column % COLUMNS == 0 || shade != at_shade) {
-                                    ui.end_row();
-                                    column = 0;
+                    let mut cell = |ui: &mut egui::Ui, color, metallic, name: &str, hit: Option<u8>| {
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::Vec2::splat(SWATCH),
+                            egui::Sense::click(),
+                        );
+                        stains::paint(ui.painter(), rect, color, metallic);
+                        if current == hit {
+                            ui.painter().rect_stroke(
+                                rect,
+                                2.0,
+                                ui.visuals().selection.stroke,
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        if response.on_hover_text(name).clicked() {
+                            picked = Some(hit);
+                        }
+                    };
+                    // Each shelf its own row, exactly as wide as its own swatches: a `Grid` would
+                    // pad every row to the widest shelf's column count instead.
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| cell(ui, Color32::TRANSPARENT, false, "No dye", None));
+                        for shelf in self.dyes.chunk_by(|left, right| left.shade == right.shade) {
+                            ui.horizontal(|ui| {
+                                for dye in shelf {
+                                    cell(ui, dye.color, dye.metallic, &dye.name, Some(dye.id));
                                 }
-                                shade = at_shade;
-                                column += 1;
-                                let (rect, response) = ui.allocate_exact_size(
-                                    egui::Vec2::splat(SWATCH),
-                                    egui::Sense::click(),
-                                );
-                                stains::paint(ui.painter(), rect, color, metallic);
-                                if current == hit {
-                                    ui.painter().rect_stroke(
-                                        rect,
-                                        2.0,
-                                        ui.visuals().selection.stroke,
-                                        egui::StrokeKind::Inside,
-                                    );
-                                }
-                                if response.on_hover_text(name).clicked() {
-                                    picked = Some(hit);
-                                }
-                            };
-                            cell(ui, Color32::TRANSPARENT, false, "No dye", None, None);
-                            for dye in &self.dyes {
-                                cell(ui, dye.color, dye.metallic, &dye.name, Some(dye.id), Some(dye.shade));
-                            }
-                        });
+                            });
+                        }
+                    });
                 });
             });
         if let Some(hit) = picked {
             self.stains[at][usize::from(channel)] = hit;
-            self.dyeing = None;
+            Popup::close_id(ui.ctx(), popup_id);
         }
     }
 
@@ -1999,6 +1987,7 @@ impl CharacterBuilder {
                     let worn = match menu.customize {
                         LIP_COLOR => self.ticked(LIPSTICK),
                         FACE_PAINT_COLOR => self.paint().is_some(),
+                        TATTOO_COLOR => self.held(FEATURES) & LEGACY_TATTOO != 0,
                         _ => true,
                     };
                     // The half a colour belongs to is the top bit of its own index, so switching
