@@ -111,10 +111,12 @@ const GET_NORMAL_MAP_PARALLAX: u32 = 0xd9fd_8a1c;
 const APPLY_ALPHA_CLIP: u32 = 0xdcfc_844e;
 const APPLY_ALPHA_CLIP_ON: u32 = 0x59c4_e6db;
 
-/// `ApplyDetailMap`, and the value that lays the tiled arrays over a surface. Left at the package's
-/// own default: the game picks this per material and we have no `g_SamplerDetailColorMap`/
-/// `g_SamplerDetailNormalMap` to feed it, so forcing it on tints every surface toward the grey
-/// stand-in instead of leaving it off like a material that never asked for it.
+/// `ApplyDetailMap`, and the value that lays the tiled arrays over a surface. Only `bg.shpk`
+/// declares `g_SamplerDetailColorMap`/`g_SamplerDetailNormalMap`, and every one of its materials
+/// states the layer and the two uv scales it would read them at: `w1d5_q4_cont1a` states
+/// `g_DetailID = 7`, `g_DetailNormalUvScale = 4` and `g_DetailColorUvScale = 4`. The package
+/// defaults the key off and no material states it, so leaving it there draws a cave wall as its own
+/// albedo and nothing finer however near the camera stands.
 const APPLY_DETAIL_MAP: u32 = 0x6313_fd87;
 const APPLY_DETAIL_MAP_ON: u32 = 0x7a3d_9efd;
 
@@ -146,6 +148,9 @@ fn engine_keys(package: &str, waving: bool) -> Vec<(u32, u32)> {
             false => GET_NORMAL_MAP_ON,
         },
     ));
+    if package.ends_with("/bg.shpk") {
+        keys.push((APPLY_DETAIL_MAP, APPLY_DETAIL_MAP_ON));
+    }
     if waving {
         keys.push((APPLY_WAVING_ANIM, APPLY_WAVING_ANIM_ON));
     }
