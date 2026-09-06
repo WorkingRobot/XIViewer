@@ -33,6 +33,18 @@ pub struct Fired {
     pub tint: Vec4,
 }
 
+/// One firing's own run of an effect: which file it came from, where it last stood and what it was
+/// last tinted by, and whether the timeline is still firing it. A run the timeline has stopped keeps
+/// stepping with its emitters shut off until its particles die out, so a command window closing or a
+/// motion looping round does not take a cloud of live particles off screen with it.
+struct Run {
+    path: String,
+    state: sim::State,
+    at: Mat4,
+    tint: Vec4,
+    firing: bool,
+}
+
 enum File {
     Fetching(TrackedPromise<Result<Vec<u8>>>),
     Ready(Box<Held>),
@@ -101,7 +113,7 @@ struct Kept {
 #[derive(Default)]
 pub struct Effects {
     files: HashMap<String, Kept>,
-    running: HashMap<u64, sim::State>,
+    running: HashMap<u64, Run>,
     textures: Textures,
     shaders: Shaders,
     /// Counts polls, so the least recently fired file is the one to give up.
@@ -203,7 +215,9 @@ impl Effects {
 
         let rate = AVFX_FRAME_RATE.get(ctx);
         let Self { files, running, .. } = self;
-        running.retain(|id, _| fired.iter().any(|held| held.id == *id));
+        for run in running.values_mut() {
+            run.firing = false;
+        }
         for held in fired {
             let Some(File::Ready(file)) = files.get(&held.path).map(|kept| &kept.file) else {
                 continue;
@@ -212,17 +226,40 @@ impl Effects {
                 true => file.effect.length,
                 false => sim::LONGEST,
             };
+            let run = running.entry(held.id).or_insert_with(|| Run {
+                path: held.path.clone(),
+                state: sim::State::default(),
+                at: held.at,
+                tint: held.tint,
+                firing: true,
+            });
+            run.firing = true;
+            run.at = held.at;
+            run.tint = held.tint;
             let frame = (held.since * rate) as i32;
-            file.effect
-                .seek(running.entry(held.id).or_default(), frame.clamp(0, end));
+            file.effect.seek(&mut run.state, frame.clamp(0, end));
         }
+        // What the timeline has stopped firing: shut its emitters and run it on a frame at a time
+        // until nothing is left. The cap is the sim's own, so a file whose particles state no life
+        // at all cannot hold a run open for ever.
+        running.retain(|_, run| {
+            if run.firing {
+                return true;
+            }
+            let Some(File::Ready(file)) = files.get(&run.path).map(|kept| &kept.file) else {
+                return false;
+            };
+            run.state.release();
+            let next = run.state.frame + 1;
+            file.effect.seek(&mut run.state, next);
+            !run.state.spent() && run.state.frame < sim::LONGEST
+        });
     }
 
     /// What to draw this frame, one entry per file however many firings it has: a draw is the
     /// file's own programs and geometry, so every firing of one goes into a single stream.
     pub fn frames(
         &self,
-        fired: &[Fired],
         view: Mat4,
         projection: Mat4,
         size: (f32, f32),
@@ -238,21 +275,20 @@ impl Effects {
                     return None;
                 };
                 let bound = self.textures.bound(&file.effect.textures);
-                let drawn: Vec<sim::Drawn> = fired
-                    .iter()
+                // Every run of this file, not only the ones still being fired: one the timeline has
+                // stopped is drawn where it last stood until its own particles are gone.
+                let drawn: Vec<sim::Drawn> = self
+                    .running
+                    .values()
                     .filter(|held| held.path == *path)
-                    .filter_map(|held| {
-                        let state = self.running.get(&held.id)?;
+                    .flat_map(|held| {
                         let (scale, rotation, translation) = held.at.to_scale_rotation_translation();
                         let scale = scale.abs().max_element().max(0.001);
-                        Some(
-                            file.effect
-                                .drawn(state)
-                                .into_iter()
-                                .map(move |item| item.placed(rotation, translation, scale, held.tint)),
-                        )
+                        file.effect
+                            .drawn(&held.state)
+                            .into_iter()
+                            .map(move |item| item.placed(rotation, translation, scale, held.tint))
                     })
-                    .flatten()
                     .collect();
                 let batches = avfx::batches(&file.effect, drawn, &bound, view, eye, right, up);
                 (!batches.is_empty()).then(|| {

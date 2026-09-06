@@ -2646,7 +2646,6 @@ impl Rendered {
             // reads every depth half a range out, puts the scene surface on top of the particle and
             // discards it, so an effect vanishes wherever anything at all stands behind it.
             effects: std::sync::Mutex::new(self.effects.borrow().frames(
-                &self.fired.borrow(),
                 view,
                 held,
                 (rect.width(), rect.height()),

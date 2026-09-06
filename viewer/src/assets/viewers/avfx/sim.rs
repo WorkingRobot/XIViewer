@@ -1159,6 +1159,20 @@ pub struct State {
     particles: Vec<Live>,
 }
 
+impl State {
+    /// Stops every emitter, leaving whatever is already alive to carry on and die out on its own.
+    /// A firing whose command window has closed, or whose motion has looped round onto a fresh one,
+    /// is released rather than taken off screen: the game leaves its particles to finish.
+    pub fn release(&mut self) {
+        self.running.clear();
+    }
+
+    /// Whether a released run has anything left to draw.
+    pub fn spent(&self) -> bool {
+        self.particles.is_empty()
+    }
+}
+
 impl Default for State {
     fn default() -> Self {
         Self {
