@@ -634,6 +634,14 @@ pub const ATTENUATION: [u32; 3] = [0x2795_eaa4, 0xe79a_9e9b, 0x4495_a6b1];
 
 /// Whether a lamp's pass drops the pixels standing outside the box its zone clipped it to, which it
 /// reads out of `m_ClipMin` and `m_ClipMax` in the same units those are stated in.
+/// `ApplyConeAttenuation`, and the value that softens a spot's edge. A spot's package defaults it
+/// off, and off is a bare `discard` at the outer cosine: the cone meets the floor as a conic section
+/// with no falloff across it at all. The variant it selects works out
+/// `(dot(dir, toPixel) - cos(outer)) / (cos(inner) - cos(outer))`, which is the penumbra the two
+/// cosines were always written for.
+pub const APPLY_CONE_ATTENUATION: u32 = 0x52d2_1d34;
+pub const APPLY_CONE_ATTENUATION_ENABLE: u32 = 0xe106_8eed;
+
 pub const LIGHT_CLIP: u32 = 0x7db0_9695;
 pub const LIGHT_CLIP_ENABLE: u32 = 0x6f0e_2969;
 

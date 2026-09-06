@@ -3284,6 +3284,10 @@ impl Scene {
                 &[
                     (program::APPLY_ATTENUATION, value),
                     (program::LIGHT_CLIP, program::LIGHT_CLIP_ENABLE),
+                    (
+                        program::APPLY_CONE_ATTENUATION,
+                        program::APPLY_CONE_ATTENUATION_ENABLE,
+                    ),
                 ],
             )
         });
