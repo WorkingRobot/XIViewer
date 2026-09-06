@@ -1100,6 +1100,9 @@ pub struct Lamp {
     /// The cosine a spot's cone is cut at, which its own shader compares the direction to a pixel
     /// against. Nothing but a spot reads it.
     pub cone: f32,
+    /// The cosine of the coefficient its cone widens by, which is what its box is scaled along
+    /// before the clamp. Nought where the kind has no cone, and the box is left as it stands.
+    pub spread: f32,
 }
 
 impl Default for Lamp {
@@ -1116,6 +1119,7 @@ impl Default for Lamp {
             direction: Vec3::Z,
             inner: 0.0,
             cone: 0.0,
+            spread: 0.0,
         }
     }
 }
@@ -3927,7 +3931,13 @@ impl Buffer {
             "m_PlaneInversMatrix",
             rows((view * lamp.placement).inverse(), 3),
         );
-        put(light, "m_ClipMin", min.extend(1.0).to_array().to_vec());
+        // A spot scales its box along itself by the cone it widens by, capped at the box's own
+        // depth; anything else leaves the box where the clamp alone puts it.
+        let along = match lamp.spread > 0.0 {
+            true => (max.z / lamp.spread).min(1.0),
+            false => 0.0,
+        };
+        put(light, "m_ClipMin", min.extend(along).to_array().to_vec());
         put(light, "m_ClipMax", max.to_array().to_vec());
         put(
             light,

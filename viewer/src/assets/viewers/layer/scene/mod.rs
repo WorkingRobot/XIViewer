@@ -576,9 +576,11 @@ struct Light {
     kind: program::LampKind,
     /// Which way it throws, in world space.
     direction: Vec3,
-    /// The cosines its cone is full strength within and cut at.
+    /// The cosines its cone is full strength within and cut at, and of the coefficient it widens
+    /// by, which is what scales its clip box.
     inner: f32,
     cone: f32,
+    spread: f32,
     /// How the zone's own `.lcb` reaches this light: the instance at the top of the tree, then an
     /// index per shared group under it.
     key: (u32, [u8; 4]),
@@ -1696,6 +1698,20 @@ impl Scene {
                                 cone: half(
                                     light.spot_angle() + light.attenuation_cone_coefficient(),
                                 ),
+                                spread: match kind {
+                                    // The coefficient as the two cosines state it between them,
+                                    // rather than as the record writes it: the pair is what the
+                                    // light's own buffer is built from.
+                                    program::LampKind::Spot => {
+                                        let widen = 2.0
+                                            * (half(light.spot_angle()
+                                                + light.attenuation_cone_coefficient())
+                                            .acos()
+                                                - half(light.spot_angle()).acos());
+                                        widen.cos().max(0.0)
+                                    }
+                                    _ => 0.0,
+                                },
                                 key: reach(key, depth, instance.id()),
                                 glow,
                             });
@@ -2241,6 +2257,7 @@ impl Scene {
                     direction: light.direction,
                     inner: light.inner,
                     cone: light.cone,
+                    spread: light.spread,
                 }
             })
             .collect()
