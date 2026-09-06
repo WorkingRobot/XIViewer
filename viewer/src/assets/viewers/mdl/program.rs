@@ -3871,9 +3871,10 @@ impl Buffer {
         // alone, and a frame the game drew states the same `(0, 0, 1, 0.05)` - the floor never bites
         // against a ramp already at one. A lamp reads `z` as what its squared distance is taken into
         // the ramp by, and `w` as what that ramp is scaled by against the distance itself: the
-        // pixel shader works out `saturate(ramp(d^2 * z) * w / d)`, so `w` is the reach and not the
-        // reciprocal of the range, which is superseded editor metadata with no runtime consumer at
-        // all. `y` is the cosine a spot is cut at, which its own package discards against outright.
+        // pixel shader works out `saturate(ramp(d^2 * z) * w / d)`. A spot's own buffer in a frame
+        // the game drew reads `(cos(inner), cos(outer), 0.000196, 1.0)`, so `w` is **one** and the
+        // falloff is the ramp over the distance with nothing scaling it up. `y` is the cosine that
+        // package discards a spot against outright.
         let reach = lamp.reach.max(0.001);
         let (inner, cone) = match pass {
             Pass::Lamp => (lamp.inner, lamp.cone),
@@ -3884,7 +3885,7 @@ impl Buffer {
             "m_Attenuation",
             match pass {
                 Pass::Composite | Pass::CompositeBlended => vec![0.0, 0.0, 1.0, 0.05],
-                _ => vec![inner, cone, 1.0 / (reach * reach), reach],
+                _ => vec![inner, cone, 1.0 / (reach * reach), 1.0],
             },
         );
         put(light, "m_LightFadeValueStatic", vec![1.0]);
