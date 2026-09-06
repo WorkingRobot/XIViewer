@@ -1816,43 +1816,54 @@ impl CharacterBuilder {
             return;
         }
         let mut picked = None;
+        // How many swatches the game's own shelves are wide, and how tight they sit: a shelf
+        // wraps onto a further row past this rather than ever sharing a row with the next, so
+        // nothing forces the popup wider than the widest shelf actually drawn.
+        const COLUMNS: usize = 9;
+        const DYE_GAP: f32 = 1.0;
         // `from_response` alone is always open, closed only by dropping the swatch or a cell's
         // click below setting `self.dyeing` to `None`: nothing here closes it on an outside click.
         Popup::from_response(&response)
             .align(RectAlign::BOTTOM_START)
             .show(|ui| {
-                ui.set_max_width(9.0 * (SWATCH + 4.0));
-                ScrollArea::vertical().max_height(10.0 * (SWATCH + 4.0)).show(ui, |ui| {
+                ScrollArea::vertical().max_height(10.0 * (SWATCH + DYE_GAP)).show(ui, |ui| {
                     egui::Grid::new(("character_dyes", at, channel))
-                        .spacing(egui::Vec2::splat(2.0))
+                        .spacing(egui::Vec2::splat(DYE_GAP))
                         .show(ui, |ui| {
                             let mut column = 0;
-                            let mut cell =
-                                |ui: &mut egui::Ui, color, metallic, name: &str, hit: Option<u8>| {
-                                    if column > 0 && column % 9 == 0 {
-                                        ui.end_row();
-                                    }
-                                    column += 1;
-                                    let (rect, response) = ui.allocate_exact_size(
-                                        egui::Vec2::splat(SWATCH),
-                                        egui::Sense::click(),
+                            let mut shade = None;
+                            let mut cell = |ui: &mut egui::Ui,
+                                            color,
+                                            metallic,
+                                            name: &str,
+                                            hit: Option<u8>,
+                                            at_shade: Option<u8>| {
+                                if column > 0 && (column % COLUMNS == 0 || shade != at_shade) {
+                                    ui.end_row();
+                                    column = 0;
+                                }
+                                shade = at_shade;
+                                column += 1;
+                                let (rect, response) = ui.allocate_exact_size(
+                                    egui::Vec2::splat(SWATCH),
+                                    egui::Sense::click(),
+                                );
+                                stains::paint(ui.painter(), rect, color, metallic);
+                                if current == hit {
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        2.0,
+                                        ui.visuals().selection.stroke,
+                                        egui::StrokeKind::Inside,
                                     );
-                                    stains::paint(ui.painter(), rect, color, metallic);
-                                    if current == hit {
-                                        ui.painter().rect_stroke(
-                                            rect,
-                                            2.0,
-                                            ui.visuals().selection.stroke,
-                                            egui::StrokeKind::Inside,
-                                        );
-                                    }
-                                    if response.on_hover_text(name).clicked() {
-                                        picked = Some(hit);
-                                    }
-                                };
-                            cell(ui, Color32::TRANSPARENT, false, "No dye", None);
+                                }
+                                if response.on_hover_text(name).clicked() {
+                                    picked = Some(hit);
+                                }
+                            };
+                            cell(ui, Color32::TRANSPARENT, false, "No dye", None, None);
                             for dye in &self.dyes {
-                                cell(ui, dye.color, dye.metallic, &dye.name, Some(dye.id));
+                                cell(ui, dye.color, dye.metallic, &dye.name, Some(dye.id), Some(dye.shade));
                             }
                         });
                 });
@@ -2001,7 +2012,14 @@ impl CharacterBuilder {
                         let (box_of, color, name, second) = paired.unwrap();
                         let mut on = self.ticked(box_of);
                         let offered = half * HALF..half * HALF + menu.count;
+                        // A fixed height for both headers, so the left grid (no header of its own,
+                        // the menu's name already stands above both columns) starts on the same
+                        // line as the right one, whose header is this checkbox.
+                        let header = ui.spacing().interact_size.y;
                         ui.columns(2, |columns| {
+                            // Nothing to draw here, only a blank row the same height as the
+                            // checkbox beside it.
+                            columns[0].horizontal(|ui| ui.set_min_height(header));
                             if let Some(index) = colors(
                                 &mut columns[0],
                                 ("character_colors", at),
@@ -2011,9 +2029,12 @@ impl CharacterBuilder {
                             ) {
                                 picked = Some(Pick::Made(menu.customize, index));
                             }
-                            if columns[1].checkbox(&mut on, name).changed() {
-                                picked = Some(Pick::Made(box_of, u32::from(on)));
-                            }
+                            columns[1].horizontal(|ui| {
+                                ui.set_min_height(header);
+                                if ui.checkbox(&mut on, name).changed() {
+                                    picked = Some(Pick::Made(box_of, u32::from(on)));
+                                }
+                            });
                             if on && let Some(index) = colors(
                                 &mut columns[1],
                                 ("character_second", at),
@@ -2318,13 +2339,9 @@ impl CharacterBuilder {
         icons: &IconManager,
     ) -> Option<Pick> {
         let mut picked = None;
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Weapon").strong());
-            if self.reading_weapons.is_some() {
-                ui.spinner();
-            }
-        });
+        if self.reading_weapons.is_some() {
+            ui.spinner();
+        }
         ui.horizontal_wrapped(|ui| {
             for (drawn, name) in [(false, "Sheathed"), (true, "Drawn")] {
                 if ui.selectable_label(self.drawn == drawn, name).clicked() {
@@ -2583,7 +2600,8 @@ impl CharacterBuilder {
                     // doing rather than what it is wearing, and neither wants to sit under a list.
                     self.posture_ui(ui)
                         .inspect(|posture| picked = Some(*posture));
-                    self.weapons_ui(ui, backend, icons)
+                    ui.add_space(8.0);
+                    section(ui, "Weapon", |ui| self.weapons_ui(ui, backend, icons))
                         .inspect(|pick| picked = Some(*pick));
                     ui.add_space(8.0);
                     section(ui, "Customization", |ui| self.appearance(ui, backend, icons))

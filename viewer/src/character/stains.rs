@@ -12,9 +12,14 @@ use crate::excel::provider::{ExcelProvider, ExcelSheet};
 
 /// `Stain`'s columns, as byte offsets. The color's leading byte is unused; the other three are
 /// red, green and blue in file order, and the sheet states no alpha. `IsMetallic` packs into bit
-/// 0 of the byte at 22; `IsHousingApplicable` (unused here) is bit 1 of the same byte.
+/// 0 of the byte at 22; `IsHousingApplicable` (unused here) is bit 1 of the same byte. `Shade` and
+/// `SubOrder` are the shelf a dye sits on in the game's own dye picker and its place on that
+/// shelf: the sheet's own row order is not either, since a colour added in a later patch is
+/// appended past whatever shelf it actually belongs on.
 const NAME: u32 = 4;
 const COLOR: u32 = 8;
+const SHADE: u32 = 20;
+const SUB_ORDER: u32 = 21;
 const IS_METALLIC: u32 = 22;
 
 /// One dye the picker offers.
@@ -24,6 +29,8 @@ pub struct Stain {
     pub color: Color32,
     /// `Stain.IsMetallic`.
     pub metallic: bool,
+    /// `Stain.Shade`: which shelf of the game's own dye picker this dye sits on.
+    pub shade: u8,
 }
 
 const CORNER: f32 = 2.0;
@@ -47,7 +54,8 @@ pub fn paint(painter: &Painter, rect: Rect, color: Color32, metallic: bool) {
     painter.add(Shape::mesh(mesh));
 }
 
-/// Every stain the game names, in row order. Row 0 is the unstained slot and is never returned.
+/// Every stain the game names, ordered the way its own dye picker shelves them: by `Shade`, then
+/// by `SubOrder` within it. Row 0 is the unstained slot and is never returned.
 pub async fn read(backend: &Backend, language: Language) -> Result<Vec<Stain>> {
     let excel = backend.excel();
     let sheet = excel.get_sheet("Stain", language).await?;
@@ -70,13 +78,22 @@ pub async fn read(backend: &Backend, language: Language) -> Result<Vec<Stain>> {
         let color: u32 = row.read(COLOR).unwrap_or(0);
         let [_, r, g, b] = color.to_be_bytes();
         let metallic = row.read_packed_bool(IS_METALLIC, 0).unwrap_or(false);
-        found.push(Stain {
-            id,
-            name,
-            color: Color32::from_rgb(r, g, b),
-            metallic,
-        });
+        let shade = row.read::<u8>(SHADE).unwrap_or(0);
+        let order: u8 = row.read(SUB_ORDER).unwrap_or(0);
+        found.push((
+            shade,
+            order,
+            Stain {
+                id,
+                name,
+                color: Color32::from_rgb(r, g, b),
+                metallic,
+                shade,
+            },
+        ));
     }
+    found.sort_by_key(|(shade, order, _)| (*shade, *order));
+    let found: Vec<Stain> = found.into_iter().map(|(.., stain)| stain).collect();
     log::info!("character: {} dyes to pick from", found.len());
     Ok(found)
 }
