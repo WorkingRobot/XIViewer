@@ -1264,11 +1264,13 @@ pub(crate) fn batches(
                         let (across, down) = facing(drawn, eye, right, up);
                         // `apricot_shape` states no per-instance buffer, so a sprite has nowhere to
                         // carry the offset its file gives it and is moved toward the eye instead.
+                        // Never further than the file asks nor a step it could cross the eye on, so
+                        // it only ever wins against what it is already standing against.
                         let center = Vec3::from(drawn.center);
-                        let toward =
-                            (eye - center).normalize_or_zero() * shading.depth_offset;
+                        let span = eye - center;
+                        let step = shading.depth_offset.clamp(0.0, span.length() * 0.5);
                         gpu::quad(
-                            center + toward,
+                            center + span.normalize_or_zero() * step,
                             across,
                             down,
                             drawn.color,

@@ -836,11 +836,17 @@ fn shading(block: &Block, lights: Option<Vec<(u32, u32)>>, sprite: bool) -> Shad
             integer(first, "TCAT").unwrap_or(1) as f32,
         ],
         sprite,
-        depth_offset: blocks
-            .iter()
-            .find(|held| held.name() == "DpOf")
-            .and_then(Block::f32)
-            .unwrap_or_default(),
+        // Only where the file states the offset in the world it stands in. The other kind is a
+        // fixed step in clip depth, which is no distance at all and would carry a sprite far
+        // further forward than it asks for.
+        depth_offset: match integer(blocks, "DOTy") == Some(1) {
+            true => 0.0,
+            false => blocks
+                .iter()
+                .find(|held| held.name() == "DpOf")
+                .and_then(Block::f32)
+                .unwrap_or_default(),
+        },
     }
 }
 
