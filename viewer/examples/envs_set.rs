@@ -44,14 +44,22 @@ fn main() {
         true => format!("bg/{zone}/level/{stem}.lvb"),
         false => format!("bg/ffxiv/{zone}/level/{stem}.lvb"),
     };
-    let level: lvb::LevelFile = ironworks.file(&path).unwrap();
-    let mut paths: Vec<String> = Vec::new();
-    for env in level.scene().environments() {
-        let held = env.asset_path();
-        if !held.is_empty() && !paths.contains(held) {
-            paths.push(held.clone());
+    // An `.envb` named outright rather than a zone, which is how a volume's own local environment
+    // is reached: nothing states those in a level's own list.
+    let paths: Vec<String> = match zone.ends_with(".envb") {
+        true => vec![zone.clone()],
+        false => {
+            let level: lvb::LevelFile = ironworks.file(&path).unwrap();
+            let mut paths: Vec<String> = Vec::new();
+            for env in level.scene().environments() {
+                let held = env.asset_path();
+                if !held.is_empty() && !paths.contains(held) {
+                    paths.push(held.clone());
+                }
+            }
+            paths
         }
-    }
+    };
     for held in paths {
         let file: envb::EnvironmentFile = ironworks.file(&held).unwrap();
         for weather in file.environments().weathers() {
