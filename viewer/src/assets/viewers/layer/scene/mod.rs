@@ -181,6 +181,10 @@ const LEAST: Duration = Duration::from_millis(6);
 /// How far the eye moves before the instance buffers are written again.
 const STEP: f32 = 8.0;
 
+/// How far the eye may turn before what it sees is worked out again, as the cosine between the two
+/// headings: about four degrees.
+const TURNED: f32 = 0.9976;
+
 /// How large an instance has to look to be worth its highest detail level, and its middle one, as a
 /// fraction of the distance to it.
 const DETAIL: [f32; 2] = [0.04, 0.012];
@@ -858,6 +862,8 @@ pub struct Scene {
     /// rather than forgotten: dropping a promise cancels the future behind it.
     picking: Option<TrackedPromise<Option<Vec<u8>>>>,
     saving: Option<TrackedPromise<()>>,
+    /// Which way it looked then, so a turn re-culls what a step alone would not.
+    facing: Vec3,
     /// Where the eye stood when the instance buffers were last written.
     written: Vec3,
     dirty: bool,
@@ -1090,6 +1096,26 @@ fn detail(apparent: f32) -> u8 {
     }
 }
 
+/// The six planes of what a clip matrix sees, each as a normal and a distance, pointing inward. The
+/// depth pair is read for a clip range of nought to one, which is what the game's shaders want.
+fn planes(clip: Mat4) -> [Vec4; 6] {
+    let (x, y, z, w) = (clip.row(0), clip.row(1), clip.row(2), clip.row(3));
+    [w + x, w - x, w + y, w - y, z, w - z].map(|held| {
+        let length = held.truncate().length();
+        match length > 0.0 {
+            true => held / length,
+            false => held,
+        }
+    })
+}
+
+/// Whether a sphere falls wholly beyond one of them, which is what a frustum cull answers.
+fn outside(planes: &[Vec4; 6], center: Vec3, radius: f32) -> bool {
+    planes
+        .iter()
+        .any(|held| held.truncate().dot(center) + held.w < -radius)
+}
+
 /// A point the bulk of the placements sit around, and how far out that bulk reaches, from medians
 /// rather than extremes.
 fn bulk(points: &[Vec3]) -> (Vec3, f32) {
@@ -1173,6 +1199,7 @@ impl Scene {
             picking: None,
             saving: None,
             written: Vec3::splat(f32::INFINITY),
+            facing: Vec3::ZERO,
             dirty: true,
             load: LOADED,
             speed: 1.0,
@@ -2148,8 +2175,17 @@ impl Scene {
         )
     }
 
-    fn rebuild(&mut self) {
+    fn rebuild(&mut self, clip: Mat4) {
         let eye = self.camera.position;
+        let frustum = planes(clip);
+        // A caster standing outside the frame still throws its shadow into it, so one is kept where
+        // the sun could carry that shadow as far as the frustum. Nothing is kept for a sun that
+        // states no colour, which is what a roofed zone leaves behind.
+        let (toward, sunlight) = self.ambient.light();
+        let cast_span = match sunlight.max_element() > 0.0 {
+            true => toward.normalize_or_zero() * self.ambient.reach,
+            false => Vec3::ZERO,
+        };
         let mut placed: Vec<[Vec<program::Instance>; 3]> = (0..self.models.len())
             .map(|_| std::array::from_fn(|_| Vec::new()))
             .collect();
@@ -2167,6 +2203,14 @@ impl Scene {
             }
             let span = (placement.center - eye).length() - placement.radius;
             if span > self.load || (placement.fade > 0.0 && span > placement.fade) {
+                continue;
+            }
+            let (center, radius) = (placement.center, placement.radius);
+            let shadowed = placement.casts
+                && cast_span != Vec3::ZERO
+                && (!outside(&frustum, center + cast_span, radius)
+                    || !outside(&frustum, center - cast_span, radius));
+            if outside(&frustum, center, radius) && !shadowed {
                 continue;
             }
             let apparent = placement.radius / span.max(0.01);
@@ -2206,6 +2250,7 @@ impl Scene {
             .collect();
         self.placed = placed;
         self.written = eye;
+        self.facing = self.camera.forward();
         self.dirty = false;
     }
 
@@ -4169,7 +4214,9 @@ impl Scene {
         }
         // Scaled by how fast the camera is set to move, so raising the speed does not turn a
         // rebuild every few seconds into one every frame.
-        if (self.camera.position - self.written).length() > STEP * self.speed {
+        if (self.camera.position - self.written).length() > STEP * self.speed
+            || self.camera.forward().dot(self.facing) < TURNED
+        {
             self.dirty = true;
         }
         // A timeline states where its node stands rather than how far it has moved, so what a frame
@@ -4185,10 +4232,6 @@ impl Scene {
         if animated {
             self.dirty = true;
         }
-        if self.dirty {
-            self.rebuild();
-        }
-
         let eye = self.camera.position;
         // A drive's own forward/up are used directly rather than rebuilt from the yaw/pitch
         // `self.camera` stores them as: that round trip degenerates for a shot looking straight up
@@ -4226,6 +4269,10 @@ impl Scene {
             near,
             far,
         );
+        if self.dirty {
+            self.rebuild(projection * view);
+        }
+
 
         let mut batches = Vec::new();
         for (at, model) in self.models.iter().enumerate() {
@@ -5309,5 +5356,25 @@ mod tests {
         assert_eq!(nearest(Vec3::ZERO, Vec3::NEG_Z, [far, near].into_iter()), Some(1));
         assert_eq!(nearest(Vec3::ZERO, Vec3::NEG_Z, [near, far].into_iter()), Some(1));
         assert_eq!(nearest(Vec3::ZERO, Vec3::NEG_Z, [].into_iter()), None);
+    }
+}
+
+#[cfg(test)]
+mod cull_test {
+    use super::{outside, planes};
+    use glam::{Mat4, Vec3};
+
+    /// A camera at the origin looking down negative z, the way `look_at_rh` leaves one.
+    #[test]
+    fn a_frustum_keeps_what_stands_in_front_of_it() {
+        let view = Mat4::look_at_rh(Vec3::ZERO, -Vec3::Z, Vec3::Y);
+        let projection = Mat4::perspective_rh(55.0_f32.to_radians(), 1.6, 0.2, 4000.0);
+        let held = planes(projection * view);
+        assert!(!outside(&held, Vec3::new(0.0, 0.0, -50.0), 1.0), "straight ahead");
+        assert!(!outside(&held, Vec3::new(0.0, 0.0, -1.0), 1.0), "close ahead");
+        assert!(outside(&held, Vec3::new(0.0, 0.0, 50.0), 1.0), "behind");
+        assert!(outside(&held, Vec3::new(5000.0, 0.0, -50.0), 1.0), "far off to the side");
+        // A sphere the eye sits inside is never culled, whichever way it is turned.
+        assert!(!outside(&held, Vec3::new(0.0, 0.0, 20.0), 100.0), "around the eye");
     }
 }
