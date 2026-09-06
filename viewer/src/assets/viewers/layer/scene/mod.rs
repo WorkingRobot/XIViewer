@@ -74,12 +74,12 @@ const DETAILS_ROW_WIDTH: f32 = 250.0;
 /// rather than limiting anything real.
 const DEPTH: u8 = 8;
 
-/// Longest edge a scene's textures are decoded to. Smaller than the model viewer's: a zone binds
-/// hundreds of materials rather than one model's handful, over the same connection.
-const TEXTURE_SIZE: u16 = 256;
+/// Longest edge a scene's textures are decoded to. A ground surface stands close enough to the
+/// camera that a quarter of its authored width is a smear where the game has grain.
+const TEXTURE_SIZE: u16 = 1024;
 
 /// Decoded texture bytes one scene may hold. Past it the rest of its surfaces draw untextured.
-const TEXTURE_BUDGET: usize = 128 << 20;
+const TEXTURE_BUDGET: usize = 512 << 20;
 
 /// Longest edge a grass color map is decoded to. Over the cap above, since a map holds its tiles
 /// side by side and a blade reads one of them.
