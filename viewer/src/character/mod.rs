@@ -1911,7 +1911,19 @@ impl CharacterBuilder {
         for (at, menu) in body.menus.iter().enumerate() {
             ui.add_space(8.0);
             let name = RichText::new(&menu.name).strong();
-            if menu.kind != menus::Kind::Slider {
+            // A colour the character is not wearing has nothing to pick: what puts it on is the
+            // box beside it, or the paint the colour is for.
+            let worn = match menu.customize {
+                LIP_COLOR => self.ticked(LIPSTICK),
+                FACE_PAINT_COLOR => self.paint().is_some(),
+                TATTOO_COLOR => self.held(FEATURES) & LEGACY_TATTOO != 0,
+                _ => true,
+            };
+            // Lip colour keeps its heading unworn: the "Lipstick" checkbox under it is its own
+            // affordance to turn it on. Face paint and tattoo colour have no such box, so their
+            // heading goes with the grid rather than standing bare over nothing.
+            let headed = worn || menu.customize == LIP_COLOR;
+            if menu.kind != menus::Kind::Slider && headed {
                 ui.label(name.clone());
             }
             let current = self.choice(menu);
@@ -1982,14 +1994,6 @@ impl CharacterBuilder {
                             picked = Some(Pick::Made(LIPSTICK, u32::from(on)));
                         }
                     }
-                    // A colour the character is not wearing has nothing to pick: what puts it on
-                    // is the box beside it, or the paint the colour is for.
-                    let worn = match menu.customize {
-                        LIP_COLOR => self.ticked(LIPSTICK),
-                        FACE_PAINT_COLOR => self.paint().is_some(),
-                        TATTOO_COLOR => self.held(FEATURES) & LEGACY_TATTOO != 0,
-                        _ => true,
-                    };
                     // The half a colour belongs to is the top bit of its own index, so switching
                     // halves is that bit and nothing else.
                     let mut half = 0;
