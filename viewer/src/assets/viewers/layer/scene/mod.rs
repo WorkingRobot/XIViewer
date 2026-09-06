@@ -96,9 +96,6 @@ const BLADES: usize = 200_000;
 /// zone's whole set would cost more than it shows; the nearest are kept.
 const LAMPS: usize = 256;
 
-/// What a light's reach is solved from, against the square of its own peak.
-const LIGHT_CUTOFF: f32 = 255.0 / 5.0;
-
 /// The scene key deciding whether a background shader reads the normal map at all. A package
 /// defaults it to off, and the variant that answer selects samples no normal map, so the frame it
 /// writes is the geometry's own.
@@ -2217,23 +2214,15 @@ impl Scene {
         near.into_iter()
             .take(LAMPS)
             .map(|(_, light)| {
-                // A light the `.lcb` states no box for keeps one of this viewer's own. The box is
-                // the volume the light is clipped against; how far it carries is a separate thing,
-                // solved below from its own brightness.
+                // A light the `.lcb` states no box for keeps one of this viewer's own. Either
+                // way, how far the light carries is read off that box rather than off its
+                // brightness: a captured frame keeps one reach for one box under a colour that
+                // swings widely, and a reach solved from brightness alone can drift far past a
+                // small box, leaving everything inside it lit at full strength up to a hard wall.
                 let (min, max) = reached(&self.clips, light.key)
                     .copied()
                     .unwrap_or((light.min, light.max));
-                let stated = match light.glow {
-                    Some(lane) => {
-                        let (color, power) = cycled(lane, self.clock);
-                        color * power
-                    }
-                    None => light.color,
-                };
-                // A light's colour is stated gamma-two and the engine squares it into linear, then
-                // carries it until its peak falls to five parts in 255.
-                let color = stated * stated;
-                let reach = (LIGHT_CUTOFF * color.max_element()).sqrt().max(0.001);
+                let reach = min.abs().max(max.abs()).max_element().max(0.001);
                 program::Lamp {
                     placement: light.placement,
                     min,
@@ -2241,7 +2230,13 @@ impl Scene {
                     reach,
                     falloff: light.falloff,
                     range: light.range,
-                    color,
+                    color: match light.glow {
+                        Some(lane) => {
+                            let (color, power) = cycled(lane, self.clock);
+                            color * power
+                        }
+                        None => light.color,
+                    },
                     kind: light.kind,
                     direction: light.direction,
                     inner: light.inner,
