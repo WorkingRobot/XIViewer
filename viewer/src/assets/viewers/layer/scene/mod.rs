@@ -4029,7 +4029,15 @@ impl Scene {
     /// any is.
     fn passes(&self) -> String {
         let held = self.renderer.lock().unwrap().drawn();
+        // A lamp kind whose own package is not in hand is drawn through the point one, which lights
+        // a cone or a line as a sphere: naming them here is what tells the two apart on screen.
+        let lit = |take: fn(&mdl::gpu::Lighting) -> bool| {
+            self.lighting.as_deref().is_some_and(take)
+        };
         let ran: Vec<&str> = [
+            (lit(|held| held.spot.is_some()), "spot"),
+            (lit(|held| held.line.is_some()), "line"),
+            (lit(|held| held.plane.is_some()), "plane"),
             (held.occlusion, "occlusion"),
             (held.shadow, "shadow"),
             (held.sky, "sky"),
