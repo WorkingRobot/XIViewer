@@ -1262,8 +1262,13 @@ pub(crate) fn batches(
                 match shape {
                     sim::Shape::Sprite => {
                         let (across, down) = facing(drawn, eye, right, up);
+                        // `apricot_shape` states no per-instance buffer, so a sprite has nowhere to
+                        // carry the offset its file gives it and is moved toward the eye instead.
+                        let center = Vec3::from(drawn.center);
+                        let toward =
+                            (eye - center).normalize_or_zero() * shading.depth_offset;
                         gpu::quad(
-                            Vec3::from(drawn.center),
+                            center + toward,
                             across,
                             down,
                             drawn.color,
