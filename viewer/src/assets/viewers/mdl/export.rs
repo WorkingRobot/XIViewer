@@ -55,9 +55,9 @@ struct Primitive {
 
 struct MaterialInfo {
     name: String,
-    /// Whether the package tints what stands behind rather than covering it, which is a surface
-    /// that has to blend however opaque its own alpha reads.
-    glass: bool,
+    /// Whether the material states a semi-transparent pass of its own: a clip the game draws a
+    /// second, blended pass beneath, or a package that tints what stands behind it outright.
+    translucent: bool,
     /// The package as the file names it, which per-package shading keys on: the channel a mask
     /// means is stated by the package, not by the family.
     package: String,
@@ -288,7 +288,7 @@ fn piece_name(path: &str) -> String {
 fn material_info(path: &str, material: &Material) -> MaterialInfo {
     MaterialInfo {
         name: piece_name(path),
-        glass: material.glass().is_some(),
+        translucent: translucent(material.shader()),
         package: material.shader().to_owned(),
         family: material.family(),
         alpha_threshold: material.alpha_threshold(),
@@ -306,7 +306,7 @@ fn material_info(path: &str, material: &Material) -> MaterialInfo {
 fn placeholder_material(path: &str) -> MaterialInfo {
     MaterialInfo {
         name: piece_name(path),
-        glass: false,
+        translucent: false,
         package: String::new(),
         family: Family::Character,
         alpha_threshold: 0.0,
@@ -603,6 +603,37 @@ struct Shaded {
     roughness: f32,
     metalness: f32,
     emissive: [f32; 3],
+}
+
+/// The packages that draw a genuinely see-through surface rather than one with a hole cut in it:
+/// the sheer half of a garment, and the glass that tints what stands behind it. Both state no alpha
+/// test of their own, and the character cutout floor would otherwise harden them at half.
+///
+/// Not `clip() > SHEER_CLIP`, which the renderer builds its second pass on: 94% of character
+/// materials declare a clip over that, nearly all of them at exactly 0.5, so it says a material
+/// alpha-tests rather than that it is see-through.
+fn translucent(package: &str) -> bool {
+    matches!(
+        package,
+        "charactertransparency.shpk" | "characterglass.shpk"
+    )
+}
+
+/// Which of glTF's three alpha modes a material draws under. A material stating a semi-transparent
+/// pass of its own keeps its soft edges: cutting it at a threshold instead hardens every one, which
+/// is what a translucent garment cannot afford. A threshold otherwise cuts the hole it is there to
+/// cut, and a surface that merely came out short of opaque blends.
+fn alpha_mode(translucent: bool, threshold: f32, sheer: bool) -> &'static str {
+    if translucent {
+        return "BLEND";
+    }
+    if threshold > 0.0 {
+        return "MASK";
+    }
+    match sheer {
+        true => "BLEND",
+        false => "OPAQUE",
+    }
 }
 
 /// The occlusion a package folds into its own albedo, out of the mask map. Measured per package,
@@ -1155,11 +1186,13 @@ fn material_json(info: &MaterialInfo, baked: &BakedMaterial, writer: &mut Writer
         BakedMaterial::Baked { sheer, .. } => *sheer,
         BakedMaterial::Flat { base_color, .. } => base_color[3] < 1.0,
     };
-    if info.alpha_threshold > 0.0 {
-        material["alphaMode"] = json!("MASK");
-        material["alphaCutoff"] = json!(info.alpha_threshold);
-    } else if sheer || info.glass {
-        material["alphaMode"] = json!("BLEND");
+    match alpha_mode(info.translucent, info.alpha_threshold, sheer) {
+        "MASK" => {
+            material["alphaMode"] = json!("MASK");
+            material["alphaCutoff"] = json!(info.alpha_threshold);
+        }
+        "BLEND" => material["alphaMode"] = json!("BLEND"),
+        _ => {}
     }
     material["doubleSided"] = json!(!info.cull);
     material
@@ -1237,6 +1270,26 @@ mod tests {
 
     /// The measured rule is stated per package: a family-wide one multiplied the eyes by a channel
     /// that is nought across every texel of their mask, which drew them black.
+    /// The female Viera's racial top is the case: `_top_a` is `character.shpk` at a clip of 0.5 and
+    /// `_top_b` is `charactertransparency.shpk` at 0.0, and only the second is see-through.
+    #[test]
+    fn only_a_see_through_package_counts_as_translucent() {
+        assert!(translucent("charactertransparency.shpk"));
+        assert!(translucent("characterglass.shpk"));
+        assert!(!translucent("character.shpk"));
+        assert!(!translucent("characterlegacy.shpk"));
+    }
+
+    #[test]
+    fn a_translucent_material_blends_rather_than_being_cut_at_a_threshold() {
+        // A garment the game draws a second blended pass for states a clip; hardening it at that
+        // clip is what loses the translucency.
+        assert_eq!(alpha_mode(true, 0.5, false), "BLEND");
+        assert_eq!(alpha_mode(false, 0.5, false), "MASK");
+        assert_eq!(alpha_mode(false, 0.0, true), "BLEND");
+        assert_eq!(alpha_mode(false, 0.0, false), "OPAQUE");
+    }
+
     #[test]
     fn only_the_packages_that_state_an_occlusion_fold_one_in() {
         let mask = Some([1.0, 1.0, 0.5, 0.25]);
