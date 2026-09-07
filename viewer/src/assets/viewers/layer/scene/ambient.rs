@@ -62,7 +62,6 @@ const SHADOW_REACH: usize = 9;
 /// What the two fog rates are stated per, rather than per unit of distance, and what the near
 /// haze's own two are: twenty units of height and a hundredth of its density.
 const FOG_RATE: f32 = 1000.0;
-const FOG_BLEND_RATE: f32 = 7400.0;
 const FALLOFF_RATE: f32 = 20.0;
 const DENSITY_RATE: f32 = 100.0;
 
@@ -614,7 +613,7 @@ impl Ambient {
             color,
             cap,
             rate: scalar(held, "fog_intensity_0", 0.0) / FOG_RATE,
-            blend: scalar(held, "fog_intensity_1", 0.0) / FOG_BLEND_RATE,
+            blend: scalar(held, "fog_intensity_1", 0.0),
             start: scalar(held, "fog_start_distance", 0.0),
             fade: scalar(held, "fog_fade_distance", 0.0),
             haze: switch(held, "use_height_fog_update"),

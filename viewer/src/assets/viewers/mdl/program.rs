@@ -1608,7 +1608,8 @@ pub struct Fog {
     pub color: Vec3,
     /// How opaque it ever gets, which is that color's own alpha.
     pub cap: f32,
-    /// How fast the opacity climbs past `start`, and the sky's share past `fade`.
+    /// How fast the opacity climbs past `start`, and how much of the sky the fog has taken up by
+    /// the far end of the table, which is what the ramp past `fade` is scaled to reach.
     pub rate: f32,
     pub blend: f32,
     pub start: f32,
@@ -1669,10 +1670,17 @@ impl Fog {
     pub fn table(&self) -> Vec<f32> {
         let last = FOG_TABLE as f32 - 1.0;
         let span = self.far() - self.start;
+        // The sky ramp is scaled to reach the share the file states exactly at the table's end
+        // rather than at a distance of its own: a fog that stops at 1,456 blends as much sky by
+        // then as one that runs to 8,000 does by there.
+        let sky = match self.far() > self.fade {
+            true => self.blend / (self.far() - self.fade),
+            false => 0.0,
+        };
         (0..FOG_TABLE)
             .flat_map(|at| {
                 let z = self.start + span * at as f32 / last;
-                let toward = ((z - self.fade) * self.blend).clamp(0.0, 1.0);
+                let toward = ((z - self.fade) * sky).clamp(0.0, 1.0);
                 [
                     ((z - self.start) * self.rate).clamp(0.0, self.cap),
                     toward * toward,
@@ -5308,7 +5316,7 @@ mod test {
             color: Vec3::new(99.0, 124.0, 153.0) / 255.0,
             cap: 1.0,
             rate: 3.0 / 1000.0,
-            blend: 1.0 / 7400.0,
+            blend: 1.0,
             start: 0.0,
             fade: 1000.0,
             ..Default::default()
@@ -5326,5 +5334,26 @@ mod test {
         let opacity: Vec<f32> = table.iter().step_by(2).copied().collect();
         assert_eq!(opacity.iter().position(|held| *held >= 1.0), Some(85));
         assert!(table.iter().skip(1).step_by(2).all(|held| *held == 0.0));
+    }
+
+    /// Ishgard, against the table the game drew there: the sky ramp reaches the share the file
+    /// states by the far end however short the fog's own reach is.
+    #[test]
+    fn the_sky_ramp_fills_the_table_the_fog_spans() {
+        let held = Fog {
+            cap: 242.0 / 255.0,
+            rate: 0.3 / 1000.0,
+            blend: 1.0,
+            start: 150.0,
+            fade: 2000.0,
+            ..Default::default()
+        };
+        assert!((held.far() - 3313.0).abs() < 1.0, "{}", held.far());
+        let table = held.table();
+        let sky: Vec<f32> = table.iter().skip(1).step_by(2).copied().collect();
+        // Nothing before the fade, which stands about three fifths of the way along the table.
+        assert_eq!(sky.iter().position(|held| *held > 0.0), Some(150));
+        // And the whole of the sky by the last texel, not the twentieth of it a fixed rate gave.
+        assert!((sky[FOG_TABLE as usize - 1] - 1.0).abs() < 1e-3, "{}", sky[255]);
     }
 }
