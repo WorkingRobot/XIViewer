@@ -110,6 +110,8 @@ const VARIANT: u32 = 18;
 const DEMIHUMAN: u8 = 2;
 const MONSTER: u8 = 3;
 
+/// The size a base stands at, which sits ahead of everything it links to.
+const BNPC_SCALE: u32 = 0;
 /// `BNpcBase`'s own links: the body, the customise array kept apart from it, and what it wears.
 const BNPC_MODEL_CHARA: u32 = 14;
 const BNPC_CUSTOMIZE: u32 = 16;
@@ -359,6 +361,8 @@ pub struct Beast {
     pub name: String,
     pub under: String,
     pub variant: u16,
+    /// The size the base states it stands at, which better than half of them state at all.
+    pub scale: f32,
 }
 
 /// Every battle character `named` pairs with a name and this resolves a body of its own for, in
@@ -403,9 +407,11 @@ pub async fn beasts(
             name,
             under,
             variant,
+            scale: stated_scale(row.read::<f32>(BNPC_SCALE).unwrap_or(0.0)),
         });
     }
-    let held = |beast: &Beast| (beast.name.clone(), beast.under.clone(), beast.variant);
+    let held =
+        |beast: &Beast| (beast.name.clone(), beast.under.clone(), beast.variant, beast.scale.to_bits());
     found.sort_by_key(held);
     // Several bases stand the very same creature, so the same name over the same body at the same
     // variant is one entry: nothing about picking it could tell the two apart.
@@ -423,9 +429,51 @@ pub fn body_code(under: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The pack a creature stands in. A human's resident idle is filed under the weapon class it holds;
+/// a creature holds no weapon, so both kinds keep theirs under `bt_common` and name the file after
+/// the kind of body it is.
+pub fn resident_pack(under: &str) -> Option<String> {
+    let code = body_code(under)?;
+    let (tree, file) = match code.as_bytes().first()? {
+        b'm' => ("monster", "monster"),
+        b'd' => ("demihuman", "idle"),
+        _ => return None,
+    };
+    Some(format!(
+        "chara/{tree}/{code}/animation/a0001/bt_common/resident/{file}.pap"
+    ))
+}
+
+/// The size a base states it stands at. Nought is not a creature of no size: it is a row stating
+/// nothing, which the game draws at its model's own.
+pub fn stated_scale(scale: f32) -> f32 {
+    match scale > 0.0 {
+        true => scale,
+        false => 1.0,
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn a_creature_stands_in_the_pack_its_own_kind_names() {
+        assert_eq!(
+            resident_pack("chara/monster/m0183/obj/body/b0006/model/").as_deref(),
+            Some("chara/monster/m0183/animation/a0001/bt_common/resident/monster.pap")
+        );
+        assert_eq!(
+            resident_pack("chara/demihuman/d1003/obj/equipment/e0001/model/").as_deref(),
+            Some("chara/demihuman/d1003/animation/a0001/bt_common/resident/idle.pap")
+        );
+    }
+
+    #[test]
+    fn a_base_stating_no_size_stands_at_its_models_own() {
+        assert_eq!(stated_scale(1.5), 1.5);
+        assert_eq!(stated_scale(0.0), 1.0);
+    }
 
     #[test]
     fn a_body_is_named_by_the_directory_its_own_files_sit_under() {

@@ -1075,6 +1075,23 @@ impl CharacterBuilder {
     /// `bt_emp_emp`'s idle pack holds no animation at all, which is bare hands having no drawn
     /// pose to take.
     fn stand(&self, model: &mdl::Rendered) {
+        // A creature holds no weapon, so none of the stance machinery below has anything to say
+        // about it: it stands in the one resident pack its own kind names.
+        if let Some(beast) = self.beast.and_then(|at| self.beasts.get(at)) {
+            let mut stood = self.stood_in.borrow_mut();
+            if stood.as_ref().is_some_and(|stood| stood.held == beast.under) {
+                return;
+            }
+            if let Some(pack) = npcs::resident_pack(&beast.under) {
+                model.stand(&[(pack, stance::SHEATHED)], 0.0);
+            }
+            *stood = Some(Stood {
+                held: beast.under.clone(),
+                drawn: self.drawn,
+                told: Cell::new(false),
+            });
+            return;
+        }
         let Some(stance) = &self.stance else {
             return;
         };
