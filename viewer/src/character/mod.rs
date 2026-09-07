@@ -2187,6 +2187,12 @@ impl CharacterBuilder {
         if self.reading_beasts.is_some() {
             ui.spinner();
         }
+        // Nothing in the game pairs a battle character with its name, so with the pairing
+        // unreachable there is no list to offer rather than a list that is merely empty.
+        if self.beasts.is_empty() && self.reading_beasts.is_none() {
+            ui.weak("No creature names available.");
+            return None;
+        }
         ui.add(
             TextEdit::singleline(&mut self.beast_search)
                 .hint_text("Search")
