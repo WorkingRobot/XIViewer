@@ -196,6 +196,11 @@ impl Material {
         &self.held
     }
 
+    /// The package this material names, as the file states it: a bare `character.shpk`.
+    pub fn shader(&self) -> &str {
+        &self.shader
+    }
+
     /// The package this material names, as a path under the shader tree.
     pub fn package(&self) -> String {
         format!("shader/sm5/shpk/{}", self.shader)
@@ -240,7 +245,7 @@ impl Material {
     /// coverage lays a lit card where the game tints what stands behind, and the halo chain then
     /// spreads that card.
     pub fn glass(&self) -> Option<Glass> {
-        if !self.shader.ends_with("/characterglass.shpk") {
+        if self.shader != "characterglass.shpk" {
             return None;
         }
         let stated = self
