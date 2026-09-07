@@ -466,6 +466,10 @@ struct Model {
     drawn: [bool; 3],
     /// Per detail level, the scene material each of its meshes uses.
     meshes: Vec<Vec<usize>>,
+    /// The box its own geometry fills, in its own space, unioned over every detail level read so
+    /// far. `None` until one has been: a model whose extent is not known yet is drawn rather than
+    /// culled, since culling it would look exactly like the bug this measures away.
+    bounds: Option<(Vec3, Vec3)>,
     /// Whether the wind may reach it, which its own header states.
     waving: bool,
     /// Whether the sun's pass draws it, which its own header states as well.
@@ -1110,6 +1114,27 @@ fn planes(clip: Mat4) -> [Vec4; 6] {
 }
 
 /// Whether a sphere falls wholly beyond one of them, which is what a frustum cull answers.
+/// The box a set of points fills, or `None` where there are none.
+fn extent(points: impl Iterator<Item = Vec3>) -> Option<(Vec3, Vec3)> {
+    points.fold(None, |held, at| {
+        Some(match held {
+            Some((min, max)) => (Vec3::min(min, at), Vec3::max(max, at)),
+            None => (at, at),
+        })
+    })
+}
+
+/// The most a transform stretches any one axis, which is what a radius in its own space grows by.
+/// The largest of the three rather than one of them: a placement is free to scale unevenly.
+fn widest(transform: &Mat4) -> f32 {
+    transform
+        .x_axis
+        .truncate()
+        .length()
+        .max(transform.y_axis.truncate().length())
+        .max(transform.z_axis.truncate().length())
+}
+
 fn outside(planes: &[Vec4; 6], center: Vec3, radius: f32) -> bool {
     planes
         .iter()
@@ -1785,6 +1810,7 @@ impl Scene {
             return *at;
         }
         self.models.push(Model {
+            bounds: None,
             path: path.to_owned(),
             state: State::Wanted,
             drawn: [false; 3],
@@ -2205,13 +2231,17 @@ impl Scene {
             if span > self.load || (placement.fade > 0.0 && span > placement.fade) {
                 continue;
             }
-            let (center, radius) = (placement.center, placement.radius);
-            let shadowed = placement.casts
-                && cast_span != Vec3::ZERO
-                && (!outside(&frustum, center + cast_span, radius)
-                    || !outside(&frustum, center - cast_span, radius));
-            if outside(&frustum, center, radius) && !shadowed {
-                continue;
+            // The instance's own origin is not where its geometry sits: a terrain plate is
+            // modelled far from it and a prop states no sphere at all, so both were culled by a
+            // point at the origin. A model whose own box has not arrived is not culled at all.
+            if let Some((center, radius)) = self.sphere(&placement) {
+                let shadowed = placement.casts
+                    && cast_span != Vec3::ZERO
+                    && (!outside(&frustum, center + cast_span, radius)
+                        || !outside(&frustum, center - cast_span, radius));
+                if outside(&frustum, center, radius) && !shadowed {
+                    continue;
+                }
             }
             let apparent = placement.radius / span.max(0.01);
             let model = &mut self.models[placement.model];
@@ -2938,6 +2968,19 @@ impl Scene {
     }
 
     /// Reads one detail level of a model and hands its geometry to the card.
+    /// The sphere a placement is culled by: its model's own box carried into the world, widened to
+    /// whatever sphere the file itself states. `None` while the model has yet to arrive, which is
+    /// what keeps an unread plate on screen rather than culling it by its origin alone.
+    fn sphere(&self, placement: &Placement) -> Option<(Vec3, f32)> {
+        let (min, max) = self.models[placement.model].bounds?;
+        let transform = placement.transform;
+        let reach = (max - min).length() * 0.5 * widest(&transform);
+        Some((
+            transform.transform_point3((min + max) * 0.5),
+            reach.max(placement.radius),
+        ))
+    }
+
     fn decode(&mut self, at: usize, bytes: Vec<u8>, level: u8) -> Result<()> {
         let path = self.models[at].path.clone();
         let container = ModelContainer::read(Cursor::new(bytes))?;
@@ -2970,6 +3013,13 @@ impl Scene {
         levels[level] = built;
         let mut meshes: Vec<Vec<usize>> = (0..3).map(|_| Vec::new()).collect();
         meshes[level] = used;
+        let held = levels[level]
+            .iter()
+            .flat_map(|(vertices, _)| vertices.iter().map(|vertex| Vec3::from(vertex.position())));
+        if let Some((min, max)) = extent(held) {
+            let (was_min, was_max) = self.models[at].bounds.unwrap_or((min, max));
+            self.models[at].bounds = Some((was_min.min(min), was_max.max(max)));
+        }
         self.models[at].drawn = drawn;
         self.models[at].meshes = meshes;
         self.models[at].waving = model.waving();
@@ -5261,6 +5311,26 @@ pub fn ui(ui: &mut egui::Ui, scene: &mut Scene, backend: &Backend) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A terrain plate is modelled far from the origin its instance states, so a sphere about that
+    /// origin does not hold it and the plate vanishes the moment the origin leaves the frustum.
+    #[test]
+    fn a_model_measures_the_box_its_own_geometry_fills() {
+        let held = extent([Vec3::new(10.0, 0.0, -4.0), Vec3::new(14.0, 6.0, 2.0)].into_iter());
+        assert_eq!(held, Some((Vec3::new(10.0, 0.0, -4.0), Vec3::new(14.0, 6.0, 2.0))));
+        assert_eq!(extent(std::iter::empty()), None);
+    }
+
+    /// A radius in a model's own space grows by whichever axis its placement stretches most, not
+    /// by one of them: a placement is free to scale unevenly.
+    #[test]
+    fn a_sphere_grows_by_the_widest_axis_a_placement_scales() {
+        assert_eq!(widest(&Mat4::from_scale(Vec3::new(2.0, 5.0, 3.0))), 5.0);
+        assert_eq!(widest(&Mat4::IDENTITY), 1.0);
+        // A rotation is not a scale, however it turns the axes.
+        let turned = Mat4::from_rotation_y(0.7);
+        assert!((widest(&turned) - 1.0).abs() < 1e-6);
+    }
 
     /// The Euler order the files are read under. A pure yaw reduces to `Mat3::from_rotation_y`,
     /// which is what ring tests over the corpus settled; this pins the rest of it.
