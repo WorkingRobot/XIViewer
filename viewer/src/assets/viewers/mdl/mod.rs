@@ -577,7 +577,6 @@ pub fn decode(path: &str, bytes: &[u8]) -> Result<Preview> {
         rigid: false,
     }])?;
     model.chrome.set(Chrome::Asset);
-    model.shaded.set(false);
     Ok(Preview::Model(Box::new(model)))
 }
 
@@ -2766,19 +2765,24 @@ impl Rendered {
     /// What the channel row offers: the translated shaders' own names for their targets, and the
     /// frame the composite resolves once the passes that make it have arrived.
     fn channels(&self) -> Vec<(usize, String)> {
-        let mut held: Vec<(usize, String)> = self
+        let named: Option<Vec<(usize, String)>> = self
             .translated
             .borrow()
             .values()
             .filter_map(|held| held.held.as_ref().ok())
             .find_map(|passes| passes.buffer.first())
-            .map(|buffer| buffer.names.iter().cloned().enumerate().collect())
-            .unwrap_or_default();
-        if !held.is_empty() && self.lighting.borrow().is_some() {
+            .map(|buffer| buffer.names.iter().cloned().enumerate().collect());
+        // A target named after the register it writes says nothing a channel view of the buffer
+        // does not say better, so the row offers the frame the lighting resolves and leaves the
+        // rest to the views the plain pass draws.
+        let mut held: Vec<(usize, String)> = named
+            .iter()
+            .flatten()
+            .filter(|(_, name)| !name.starts_with("SV_Target"))
+            .cloned()
+            .collect();
+        if named.is_some() && self.lighting.borrow().is_some() {
             held.push((gpu::LIT, "Lit".to_owned()));
-            if self.look.get().reflect {
-                held.push((deferred::REFLECTED, "Reflection".to_owned()));
-            }
         }
         held
     }
