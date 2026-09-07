@@ -37,7 +37,7 @@ impl Templates {
 
     /// A stain's values for the template a dye row names, trying both files since a row's id alone
     /// does not say which it came from.
-    fn pack(&self, template: u16, stain: u8) -> Option<stm::DyePack> {
+    pub(super) fn pack(&self, template: u16, stain: u8) -> Option<stm::DyePack> {
         let template = u32::from(template);
         self.regular
             .template(template)
@@ -172,7 +172,7 @@ pub fn table(
 }
 
 #[cfg(test)]
-mod test {
+pub(super) mod test {
     use std::io::Cursor;
 
     use half::f16;
@@ -212,7 +212,7 @@ mod test {
         bytes
     }
 
-    fn templates(key: u32) -> Templates {
+    pub fn templates(key: u32) -> Templates {
         // diffuse, specular, emissive, then the nine scalars in template order.
         let columns = [
             color(0.4),
@@ -239,7 +239,7 @@ mod test {
 
     /// A material carrying nothing but a full-size extended color table, every row zero, and a
     /// dye table naming the rows in `dye` by index.
-    fn extended_material(dye: &[(u16, u8, u16)]) -> Vec<u8> {
+    pub fn extended_material(dye: &[(u16, u8, u16)]) -> Vec<u8> {
         let mut table = vec![0u16; 32 * 32];
         for &(template, channel, fields) in dye {
             let bits = u32::from(fields) | (u32::from(template) << 16) | (u32::from(channel) << 27);

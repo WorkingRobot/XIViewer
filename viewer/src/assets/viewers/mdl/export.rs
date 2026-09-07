@@ -13,6 +13,9 @@ use image::{DynamicImage, GenericImageView, ImageFormat, Rgba, RgbaImage};
 use ironworks::file::mdl::VertexAttributeKind;
 use serde_json::{Value, json};
 
+use ironworks::file::{mtrl, stm};
+
+use super::dye;
 use super::material::{Family, Material, Role};
 use super::program;
 use super::{Rendered, Slot, Vertex, build, detail, draws};
@@ -93,10 +96,42 @@ pub(super) fn gather(rendered: &Rendered) -> Result<Scene> {
     let enabled_shapes = rendered.shapes.borrow();
     let slots = rendered.slots.borrow();
 
+    // A material dedupes across the pieces that name it, so the stain it is dyed with is the one
+    // the first piece drawing it was given. Two pieces sharing a material and dyed apart would
+    // have to be baked twice; nothing the character tab builds does that, and this says so if it
+    // ever starts.
+    let stains = rendered.stains.borrow();
+    let templates = rendered.dye_templates.borrow();
+    let mut piece_of: HashMap<usize, usize> = HashMap::new();
+    for mesh in &level.meshes {
+        let held = *piece_of.entry(mesh.material).or_insert(mesh.piece);
+        if held != mesh.piece && stains.get(held) != stains.get(mesh.piece) {
+            log::warn!(
+                "assets/mdl: export: material {} is worn by pieces dyed apart, baking the first",
+                mesh.material
+            );
+        }
+    }
+
     let mut materials = Vec::with_capacity(level.materials.len());
     for (index, path) in level.materials.iter().enumerate() {
         match slots.get(index) {
-            Some(Some(Slot::Ready(material))) => materials.push(material_info(path, material)),
+            Some(Some(Slot::Ready(material))) => {
+                let mut info = material_info(path, material);
+                let worn = piece_of
+                    .get(&index)
+                    .and_then(|piece| stains.get(*piece))
+                    .copied()
+                    .unwrap_or_default();
+                if let Some(base) = &info.table
+                    && let Some(colors) = material.held().color_table()
+                    && let Some(templates) = templates.as_deref()
+                    && let Some(held) = dyed(base, colors, templates, worn)
+                {
+                    info.table = Some(held);
+                }
+                materials.push(info);
+            }
             // A material can legitimately be absent from the install (a stated variant with no file
             // behind it), which is not reason enough to fail an export of everything else that did
             // load: draw that one piece untextured instead.
@@ -283,6 +318,72 @@ fn piece_name(path: &str) -> String {
         .or_else(|| stem.strip_suffix(".mtrl"))
         .unwrap_or(stem)
         .to_owned()
+}
+
+/// Where each dyed field lands in a decoded row, which is the layout `material::pack` writes and
+/// [`shade_texel`] reads: three colours of three, then the scalars beside them.
+type ColorField = (mtrl::DyeField, fn(&stm::DyePack) -> [f32; 3], usize);
+type ScalarField = (mtrl::DyeField, fn(&stm::DyePack) -> f32, usize);
+
+const COLOR_FIELDS: [ColorField; 3] = [
+    (mtrl::DyeField::Diffuse, |pack| pack.diffuse, 0),
+    (mtrl::DyeField::Specular, |pack| pack.specular, 4),
+    (mtrl::DyeField::Emissive, |pack| pack.emissive, 8),
+];
+const SCALAR_FIELDS: [ScalarField; 5] = [
+    (mtrl::DyeField::Roughness, |pack| pack.roughness, 3),
+    (mtrl::DyeField::Metalness, |pack| pack.metalness, 7),
+    (mtrl::DyeField::SheenRate, |pack| pack.sheen_rate, 11),
+    (mtrl::DyeField::SheenTint, |pack| pack.sheen_tint, 12),
+    (mtrl::DyeField::SheenAperture, |pack| pack.sheen_aperture, 13),
+];
+
+/// A row of the decoded table, in floats.
+const ROW: usize = 16;
+
+/// The base table with the wearer's stains laid over it. The renderer dyes the half-packed table
+/// its shaders sample; this is the same rule read off the same templates, applied to the decoded
+/// row the export shades from. `None` where nothing was picked or nothing in the table is dyed.
+fn dyed(
+    base: &[f32],
+    colors: &mtrl::ColorTable,
+    templates: &dye::Templates,
+    stains: [Option<u8>; 2],
+) -> Option<Vec<f32>> {
+    if stains == [None, None] {
+        return None;
+    }
+    let mut values = base.to_vec();
+    let mut any = false;
+    for index in 0..colors.rows() {
+        let Some(row) = colors.dye_row(index) else {
+            continue;
+        };
+        if row.template() == 0 {
+            continue;
+        }
+        let Some(Some(stain)) = stains.get(usize::from(row.channel())) else {
+            continue;
+        };
+        let Some(pack) = templates.pack(row.template(), *stain) else {
+            continue;
+        };
+        let Some(slice) = values.get_mut(index * ROW..(index + 1) * ROW) else {
+            continue;
+        };
+        for (field, read, at) in COLOR_FIELDS {
+            if row.dyes(field) {
+                slice[at..at + 3].copy_from_slice(&read(&pack));
+            }
+        }
+        for (field, read, at) in SCALAR_FIELDS {
+            if row.dyes(field) {
+                slice[at] = read(&pack);
+            }
+        }
+        any = true;
+    }
+    any.then_some(values)
 }
 
 fn material_info(path: &str, material: &Material) -> MaterialInfo {
@@ -1272,6 +1373,38 @@ mod tests {
     /// that is nought across every texel of their mask, which drew them black.
     /// The female Viera's racial top is the case: `_top_a` is `character.shpk` at a clip of 0.5 and
     /// `_top_b` is `charactertransparency.shpk` at 0.0, and only the second is see-through.
+    /// The renderer lays a stain over the half-packed table its shaders sample; this lays the same
+    /// template over the decoded row, so the two have to name the same fields.
+    #[test]
+    fn a_stain_replaces_the_fields_its_row_names_and_nothing_else() {
+        use std::io::Cursor;
+
+        use ironworks::file::File;
+
+        // Row 0 takes its diffuse, metalness and roughness from template 1, channel 0.
+        let fields = (1 << mtrl::DyeField::Diffuse as u16)
+            | (1 << mtrl::DyeField::Metalness as u16)
+            | (1 << mtrl::DyeField::Roughness as u16);
+        let bytes = dye::test::extended_material(&[(1100, 0, fields)]);
+        let material = mtrl::Material::read(Cursor::new(bytes)).unwrap();
+        let colors = material.color_table().unwrap();
+        let templates = dye::test::templates(1100);
+
+        let base = vec![0.0f32; colors.rows() * ROW];
+        let held = dyed(&base, colors, &templates, [Some(3), None]).unwrap();
+        // The template's own values arrive through a half, so they come back rounded to one.
+        let near = |held: f32, wanted: f32| (held - wanted).abs() < 1e-3;
+        assert!(near(held[0], 0.4) && near(held[1], 1.4) && near(held[2], 2.4)); // diffuse
+        assert!(near(held[3], 0.5)); // roughness
+        assert!(near(held[7], 0.8)); // metalness
+        // Nothing the row did not name moved, and no other row was touched at all.
+        assert_eq!(&held[4..7], &[0.0; 3]);
+        assert_eq!(&held[8..ROW], &[0.0; 8]);
+        assert!(held[ROW..].iter().all(|held| *held == 0.0));
+
+        assert!(dyed(&base, colors, &templates, [None, None]).is_none());
+    }
+
     #[test]
     fn only_a_see_through_package_counts_as_translucent() {
         assert!(translucent("charactertransparency.shpk"));
