@@ -39,7 +39,7 @@ use crate::excel::provider::ExcelProvider;
 use crate::settings::{LANGUAGE, api_base};
 use crate::utils::{
     CollapsibleSidePanel, FuzzyMatcher, IconManager, ManagedIcon, Side, TrackedPromise,
-    icon_context_menu,
+    fetch_url_str, icon_context_menu,
 };
 
 /// The set every character is built from. The game holds one body mesh, `c0101b0001`, and stands
@@ -345,6 +345,13 @@ pub struct CharacterBuilder {
     npc: Option<usize>,
     npc_search: String,
     npcs_matched: RefCell<(Option<String>, Vec<usize>)>,
+    /// The battle characters that are a body of their own, and which of them the character stands
+    /// as in place of anything the creator would have built.
+    beasts: Vec<npcs::Beast>,
+    reading_beasts: Option<TrackedPromise<Result<Vec<npcs::Beast>>>>,
+    beast: Option<usize>,
+    beast_search: String,
+    beasts_matched: RefCell<(Option<String>, Vec<usize>)>,
     /// The emotes the game names, and which of them is being played.
     emotes: Vec<emotes::Emote>,
     reading_emotes: Option<TrackedPromise<Result<Played>>>,
@@ -473,6 +480,11 @@ impl Default for CharacterBuilder {
             npc: None,
             npc_search: String::new(),
             npcs_matched: Default::default(),
+            beasts: Vec::new(),
+            reading_beasts: None,
+            beast: None,
+            beast_search: String::new(),
+            beasts_matched: Default::default(),
             emotes: Vec::new(),
             reading_emotes: None,
             poses: emotes::Poses::default(),
@@ -541,6 +553,10 @@ impl CharacterBuilder {
         self.reading_npcs = None;
         self.npc = None;
         self.npcs_matched.take();
+        self.beasts.clear();
+        self.reading_beasts = None;
+        self.beast = None;
+        self.beasts_matched.take();
         self.emotes.clear();
         self.poses = emotes::Poses::default();
         self.posture = emotes::Posture::default();
@@ -655,6 +671,18 @@ impl CharacterBuilder {
         self.reading_npcs = Some(TrackedPromise::spawn_local(async move {
             npcs::read(&standing, language).await
         }));
+        let stood = backend.clone();
+        let paired = format!("{}/bnpc/", api_base(ctx));
+        self.reading_beasts = Some(TrackedPromise::spawn_local(async move {
+            let held: BTreeMap<u32, Vec<u32>> =
+                serde_json::from_str(&fetch_url_str(paired).await?)?;
+            // Only the most-sighted name of each, which is what the pairing is ordered by.
+            let named = held
+                .into_iter()
+                .filter_map(|(base, names)| Some((base, *names.first()?)))
+                .collect();
+            npcs::beasts(&stood, language, &named).await
+        }));
         let stanced = backend.clone();
         self.reading_stance = Some(TrackedPromise::spawn_local(async move {
             stance::Stance::read(&stanced, language).await
@@ -689,6 +717,16 @@ impl CharacterBuilder {
                 }
                 Ok(Err(why)) => log::warn!("character: no characters to stand in: {why}"),
                 Err(promise) => self.reading_npcs = Some(promise),
+            }
+        }
+        if let Some(promise) = self.reading_beasts.take() {
+            match promise.try_take() {
+                Ok(Ok(read)) => {
+                    self.beasts = read;
+                    self.beasts_matched.take();
+                }
+                Ok(Err(why)) => log::warn!("character: no creatures to stand as: {why}"),
+                Err(promise) => self.reading_beasts = Some(promise),
             }
         }
         if let Some(promise) = self.reading_stance.take() {
@@ -1455,6 +1493,12 @@ impl CharacterBuilder {
         listing: &Listing,
         deformers: &mdl::Deformers,
     ) -> Vec<(String, u16, [Option<u8>; 2])> {
+        if let Some(beast) = self.beast.and_then(|at| self.beasts.get(at)) {
+            return whole_body(listing, &beast.under, beast.variant)
+                .into_iter()
+                .map(|(path, variant)| (path, variant, [None, None]))
+                .collect();
+        }
         if self.body.is_empty() {
             return Vec::new();
         }
@@ -1532,13 +1576,7 @@ impl CharacterBuilder {
         let Some(mount) = self.mount.and_then(|at| self.mounts.get(at)) else {
             return Vec::new();
         };
-        let mut found = listing.under(&mount.under);
-        found.retain(|path| path.ends_with(".mdl"));
-        found.sort();
-        found
-            .into_iter()
-            .map(|path| (path, mount.variant))
-            .collect()
+        whole_body(listing, &mount.under, mount.variant)
     }
 
     /// Whether the body's own model for a slot still draws, which is what a piece worn over it
@@ -2142,6 +2180,60 @@ impl CharacterBuilder {
         picked
     }
 
+    /// The creatures the game names, searched by name. Picking one stands the character as that
+    /// body outright: a monster is one whole model and a demihuman is several pieces of equipment,
+    /// so neither is anything the creator's own numbering could have built.
+    fn beasts_ui(&mut self, ui: &mut egui::Ui) -> Option<Pick> {
+        if self.reading_beasts.is_some() {
+            ui.spinner();
+        }
+        ui.add(
+            TextEdit::singleline(&mut self.beast_search)
+                .hint_text("Search")
+                .desired_width(f32::INFINITY),
+        );
+        let mut picked = None;
+        let query = self.beast_search.clone();
+        let matched = self.beasts_matching(&query);
+        let row = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().button_padding.y * 2.0;
+        let step = row + ui.spacing().item_spacing.y;
+        ScrollArea::vertical()
+            .id_salt("character_beasts")
+            .max_height(step * SHOWN as f32)
+            .show_rows(ui, step, matched.len(), |ui, rows| {
+                for at in rows {
+                    let index = matched[at];
+                    let name = &self.beasts[index].name;
+                    let button = egui::Button::selectable(self.beast == Some(index), name.as_str())
+                        .truncate()
+                        .min_size(egui::vec2(ui.available_width(), row));
+                    if ui.add(button).on_hover_text(name).clicked() {
+                        picked = Some(Pick::Beast((self.beast != Some(index)).then_some(index)));
+                    }
+                }
+            });
+        picked
+    }
+
+    /// Which creatures a search names, kept the way a slot's own list is.
+    fn beasts_matching(&self, query: &str) -> Ref<'_, Vec<usize>> {
+        if self.beasts_matched.borrow().0.as_deref() != Some(query) {
+            let found = self.matcher.match_list_indirect(
+                (!query.is_empty()).then_some(query),
+                self.beasts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, beast)| (index, beast.name.as_str())),
+                |beast| beast.1,
+            );
+            *self.beasts_matched.borrow_mut() = (
+                Some(query.to_owned()),
+                found.into_iter().map(|(index, _)| index).collect(),
+            );
+        }
+        Ref::map(self.beasts_matched.borrow(), |(_, rows)| rows)
+    }
+
     /// Which characters a search names, kept the way a slot's own list is.
     fn npcs_matching(&self, query: &str) -> Ref<'_, Vec<usize>> {
         if self.npcs_matched.borrow().0.as_deref() != Some(query) {
@@ -2530,102 +2622,109 @@ impl CharacterBuilder {
                 });
                 ScrollArea::vertical().show(ui, |ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                    ui.label(RichText::new("Race").strong());
-                    for race in self.creator.races.keys() {
-                        if !self.creator.bodies.iter().any(|body| body.race == *race) {
-                            continue;
-                        }
-                        let name = menus::Creator::named(&self.creator.races, *race, self.female);
-                        if ui.selectable_label(self.race == *race, name).clicked() {
-                            picked = Some(Pick::Race(*race));
-                        }
-                    }
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("Clan").strong());
-                    for body in &self.creator.bodies {
-                        if body.race != self.race || body.female != self.female {
-                            continue;
-                        }
-                        let name =
-                            menus::Creator::named(&self.creator.tribes, body.tribe, self.female);
-                        if ui
-                            .selectable_label(self.tribe == body.tribe, name)
-                            .clicked()
-                        {
-                            picked = Some(Pick::Tribe(body.tribe));
-                        }
-                    }
-                    ui.add_space(8.0);
-                    ui.horizontal_wrapped(|ui| {
-                        for (female, name) in [(false, "Male"), (true, "Female")] {
-                            if ui.selectable_label(self.female == female, name).clicked() {
-                                picked = Some(Pick::Gender(female));
+                    // Everything the creator drives goes quiet while the character stands as
+                    // a creature: a monster is not built out of a race, a clan or a face.
+                    if self.beast.is_none() {
+                        ui.label(RichText::new("Race").strong());
+                        for race in self.creator.races.keys() {
+                            if !self.creator.bodies.iter().any(|body| body.race == *race) {
+                                continue;
+                            }
+                            let name = menus::Creator::named(&self.creator.races, *race, self.female);
+                            if ui.selectable_label(self.race == *race, name).clicked() {
+                                picked = Some(Pick::Race(*race));
                             }
                         }
-                        // Only some races are built a child, and the rest would draw the adult
-                        // under a lit button.
-                        if self.builds_a_child()
-                            && ui.selectable_label(self.child, "Child").clicked()
-                        {
-                            picked = Some(Pick::Child(!self.child));
-                        }
-                    });
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("Attire").strong());
-                    ui.horizontal_wrapped(|ui| {
-                        for (attire, name) in [
-                            (Attire::Race, "Race"),
-                            (Attire::Job, "Job"),
-                            (Attire::Smallclothes, "Smallclothes"),
-                            (Attire::Npc, "Theirs"),
-                        ] {
-                            if ui.selectable_label(self.attire == attire, name).clicked() {
-                                picked = Some(Pick::Attire(attire));
-                            }
-                        }
-                    });
-                    if self.attire == Attire::Job {
-                        for (at, job) in self.creator.jobs.iter().enumerate() {
-                            if ui.selectable_label(self.job == at, &job.name).clicked() {
-                                picked = Some(Pick::Job(at));
-                            }
-                        }
-                    }
-                    if let Some(listing) = &listing {
                         ui.add_space(8.0);
-                        section(ui, "Equipment", |ui| {
-                            if self.reading_pieces.is_some() {
-                                ui.spinner();
+                        ui.label(RichText::new("Clan").strong());
+                        for body in &self.creator.bodies {
+                            if body.race != self.race || body.female != self.female {
+                                continue;
                             }
-                            for slot in Slot::GEAR {
-                                self.slot_ui(ui, backend, icons, listing, slot);
+                            let name =
+                                menus::Creator::named(&self.creator.tribes, body.tribe, self.female);
+                            if ui
+                                .selectable_label(self.tribe == body.tribe, name)
+                                .clicked()
+                            {
+                                picked = Some(Pick::Tribe(body.tribe));
                             }
-                            None
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal_wrapped(|ui| {
+                            for (female, name) in [(false, "Male"), (true, "Female")] {
+                                if ui.selectable_label(self.female == female, name).clicked() {
+                                    picked = Some(Pick::Gender(female));
+                                }
+                            }
+                            // Only some races are built a child, and the rest would draw the adult
+                            // under a lit button.
+                            if self.builds_a_child()
+                                && ui.selectable_label(self.child, "Child").clicked()
+                            {
+                                picked = Some(Pick::Child(!self.child));
+                            }
                         });
                         ui.add_space(8.0);
-                        section(ui, "Accessories", |ui| {
-                            for slot in Slot::ADORNMENT {
-                                self.slot_ui(ui, backend, icons, listing, slot);
+                        ui.label(RichText::new("Attire").strong());
+                        ui.horizontal_wrapped(|ui| {
+                            for (attire, name) in [
+                                (Attire::Race, "Race"),
+                                (Attire::Job, "Job"),
+                                (Attire::Smallclothes, "Smallclothes"),
+                                (Attire::Npc, "Theirs"),
+                            ] {
+                                if ui.selectable_label(self.attire == attire, name).clicked() {
+                                    picked = Some(Pick::Attire(attire));
+                                }
                             }
-                            None
                         });
+                        if self.attire == Attire::Job {
+                            for (at, job) in self.creator.jobs.iter().enumerate() {
+                                if ui.selectable_label(self.job == at, &job.name).clicked() {
+                                    picked = Some(Pick::Job(at));
+                                }
+                            }
+                        }
+                        if let Some(listing) = &listing {
+                            ui.add_space(8.0);
+                            section(ui, "Equipment", |ui| {
+                                if self.reading_pieces.is_some() {
+                                    ui.spinner();
+                                }
+                                for slot in Slot::GEAR {
+                                    self.slot_ui(ui, backend, icons, listing, slot);
+                                }
+                                None
+                            });
+                            ui.add_space(8.0);
+                            section(ui, "Accessories", |ui| {
+                                for slot in Slot::ADORNMENT {
+                                    self.slot_ui(ui, backend, icons, listing, slot);
+                                }
+                                None
+                            });
+                        }
+                        // Beside the weapon's own sheathed and drawn, since both say what the body is
+                        // doing rather than what it is wearing, and neither wants to sit under a list.
+                        self.posture_ui(ui)
+                            .inspect(|posture| picked = Some(*posture));
+                        ui.add_space(8.0);
+                        section(ui, "Weapon", |ui| self.weapons_ui(ui, backend, icons))
+                            .inspect(|pick| picked = Some(*pick));
+                        ui.add_space(8.0);
+                        section(ui, "Customization", |ui| self.appearance(ui, backend, icons))
+                            .inspect(|made| picked = Some(*made));
                     }
-                    // Beside the weapon's own sheathed and drawn, since both say what the body is
-                    // doing rather than what it is wearing, and neither wants to sit under a list.
-                    self.posture_ui(ui)
-                        .inspect(|posture| picked = Some(*posture));
-                    ui.add_space(8.0);
-                    section(ui, "Weapon", |ui| self.weapons_ui(ui, backend, icons))
-                        .inspect(|pick| picked = Some(*pick));
-                    ui.add_space(8.0);
-                    section(ui, "Customization", |ui| self.appearance(ui, backend, icons))
-                        .inspect(|made| picked = Some(*made));
                     ui.add_space(8.0);
                     section(ui, "Emote", |ui| self.emotes_ui(ui, backend, icons))
                         .inspect(|emote| picked = Some(*emote));
                     ui.add_space(8.0);
                     section(ui, "Mount", |ui| self.mounts_ui(ui, backend, icons))
                         .inspect(|mount| picked = Some(*mount));
+                    ui.add_space(8.0);
+                    section(ui, "Creature", |ui| self.beasts_ui(ui))
+                        .inspect(|beast| picked = Some(*beast));
                     ui.add_space(8.0);
                     section(ui, "Stand in for", |ui| self.npcs_ui(ui))
                         .inspect(|npc| picked = Some(*npc));
@@ -2715,6 +2814,7 @@ impl CharacterBuilder {
                 self.posture = emotes::Posture::Standing;
                 self.pose = 0;
             }
+            Some(Pick::Beast(beast)) => self.beast = beast,
             Some(Pick::Seat(seat)) => self.mount_seat = seat,
             Some(Pick::Weapon(weapon)) => self.main_hand = weapon,
             Some(Pick::OffHand(weapon)) => self.off_hand = weapon,
@@ -2756,6 +2856,8 @@ enum Pick {
     /// Which of the mount's own seats to ride in.
     Seat(usize),
     Npc(usize),
+    /// A creature to stand as in place of a built body, or none to go back to the built one.
+    Beast(Option<usize>),
     /// A weapon to wield in the main hand, or none to go unarmed.
     Weapon(Option<usize>),
     /// A weapon to wield in the off hand, or none to leave it empty.
@@ -3131,6 +3233,16 @@ fn listed<'a>(
 }
 
 /// A collapsing section that starts open, so nothing looks different until it is folded.
+/// Every model under one directory at one variant, in path order: a body drawn whole rather than
+/// worn a slot at a time, which is what a mount and a creature both are. The first file is what
+/// names the skeleton the rest are posed on.
+fn whole_body(listing: &Listing, under: &str, variant: u16) -> Vec<(String, u16)> {
+    let mut found = listing.under(under);
+    found.retain(|path| path.ends_with(".mdl"));
+    found.sort();
+    found.into_iter().map(|path| (path, variant)).collect()
+}
+
 fn section(
     ui: &mut egui::Ui,
     title: &str,

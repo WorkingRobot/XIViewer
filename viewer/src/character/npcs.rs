@@ -351,3 +351,65 @@ pub async fn read(backend: &Backend, language: Language) -> Result<Vec<Npc>> {
     log::info!("character: {} named characters to stand in", found.len());
     Ok(found)
 }
+
+/// One of the game's battle characters as far as standing as one goes: a body of its own, under a
+/// name no sheet of the game's pairs it with.
+#[derive(Clone)]
+pub struct Beast {
+    pub name: String,
+    pub under: String,
+    pub variant: u16,
+}
+
+/// Every battle character `named` pairs with a name and this resolves a body of its own for, in
+/// name order.
+///
+/// `BNpcBase` states no name at all, which is what `named` supplies from outside; a base it misses
+/// is left out rather than listed as a number. One whose `ModelChara` is a human is left out too:
+/// that is the creator's own numbering, which the human list already stands in for.
+pub async fn beasts(
+    backend: &Backend,
+    language: Language,
+    named: &BTreeMap<u32, u32>,
+) -> Result<Vec<Beast>> {
+    let excel = backend.excel();
+    let bases = excel.get_sheet("BNpcBase", language).await?;
+    let models = excel.get_sheet("ModelChara", language).await?;
+    let names = excel.get_sheet("BNpcName", language).await?;
+
+    let mut found = Vec::new();
+    for (base, name) in named {
+        let Ok(row) = bases.get_row(*base) else {
+            continue;
+        };
+        let chara = row.read::<u16>(BNPC_MODEL_CHARA).unwrap_or(0);
+        let Some((under, variant)) = models
+            .get_row(u32::from(chara))
+            .ok()
+            .filter(|_| chara != 0)
+            .and_then(|held| beast(&held))
+        else {
+            continue;
+        };
+        let name = names
+            .get_row(*name)
+            .ok()
+            .and_then(|held| held.read_string(SINGULAR).ok().map(|held| held.to_string()))
+            .unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        found.push(Beast {
+            name,
+            under,
+            variant,
+        });
+    }
+    let held = |beast: &Beast| (beast.name.clone(), beast.under.clone(), beast.variant);
+    found.sort_by_key(held);
+    // Several bases stand the very same creature, so the same name over the same body at the same
+    // variant is one entry: nothing about picking it could tell the two apart.
+    found.dedup_by_key(|beast| held(beast));
+    log::info!("character: {} creatures to stand as", found.len());
+    Ok(found)
+}
