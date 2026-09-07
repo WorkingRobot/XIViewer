@@ -1041,8 +1041,15 @@ impl CharacterBuilder {
         // Cheap enough to hand over on every frame: it walks the parts of one character and the
         // model keeps what it was already at, so nothing is rebuilt where nothing was picked.
         if let Some(Ok(model)) = &self.model {
-            let (customize, hidden, shapes, stature, bust) = self.made();
-            model.made(customize, hidden, shapes, stature, bust);
+            match self.beast.and_then(|at| self.beasts.get(at)) {
+                // A creature states its own size and is built out of no menu, so nothing the
+                // creator holds has anything to say about it.
+                Some(beast) => model.stands_at(beast.scale),
+                None => {
+                    let (customize, hidden, shapes, stature, bust) = self.made();
+                    model.made(customize, hidden, shapes, stature, bust);
+                }
+            }
             model.hinged(self.raised());
             // Neither eye bone is animated by anything, so the table is the whole of what sizes
             // them; a body, face or eye shape it says nothing about leaves them at rest.

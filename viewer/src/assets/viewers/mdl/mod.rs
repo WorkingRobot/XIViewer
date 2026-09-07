@@ -3392,6 +3392,12 @@ impl Rendered {
         held
     }
 
+    /// The size a body stands at on its own, for one that is not built out of the creator's menus
+    /// and so has no customisation to set beside it.
+    pub fn stands_at(&self, stature: f32) {
+        self.stature.set(stature);
+    }
+
     pub fn made(
         &self,
         customize: program::Customize,
