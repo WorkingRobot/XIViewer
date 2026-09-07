@@ -5018,6 +5018,126 @@ fn fragment_samplers(source: &str) -> usize {
         .count()
 }
 
+/// Samplers nothing in this viewer ever binds a texture to. Swept 2026-09-06 over the 108,911
+/// materials in the install (26 distinct sampler ids between them) and over every id `deferred`
+/// itself supplies: none of these is reachable from either, so `absent()`'s flat stand-in is the
+/// whole of what they read. Shedding one is what the frame already draws, one texture unit cheaper.
+const NEVER_BOUND: [&str; 8] = [
+    "g_SamplerAuraTexture",
+    "g_SamplerAuraTexture1",
+    "g_SamplerAuraTexture2",
+    "g_SamplerDissolveTexture",
+    "g_SamplerDissolveTexture1",
+    "g_SamplerDepthWithWater",
+    "g_SkySampler",
+    "g_SamplerWaveletNoise",
+];
+
+/// Shed only once the list above is not enough. A cube falls back to the reflection texture rather
+/// than to the flat stand-in, so replacing it with a constant is a real loss, not a rewrite.
+const LAST_RESORT: [&str; 1] = ["g_SamplerReflectionArray"];
+
+/// The sampling calls whose value a constant can stand for. `textureSize` is deliberately absent:
+/// it answers a dimension rather than a texel, so a sampler read through one is never shed.
+const SAMPLING: [&str; 5] = [
+    "texture",
+    "textureLod",
+    "textureGrad",
+    "texelFetch",
+    "textureGather",
+];
+
+/// What the flat stand-in `absent()` binds reads back as, which is what a shed sampler stands for.
+fn stand_in_value(declaration: &str) -> &'static str {
+    match declaration.contains("usampler") {
+        true => "uvec4(128u, 128u, 128u, 255u)",
+        false => "vec4(0.5019608, 0.5019608, 0.5019608, 1.0)",
+    }
+}
+
+/// Whether `at` starts an identifier token rather than falling inside a longer one.
+fn token_at(source: &str, at: usize, name: &str) -> bool {
+    let ident = |held: Option<char>| held.is_some_and(|held| held.is_alphanumeric() || held == '_');
+    !ident(source[..at].chars().next_back()) && !ident(source[at + name.len()..].chars().next())
+}
+
+/// One sampler removed: its declaration dropped and every read of it replaced by the constant the
+/// stand-in it is bound to reads back as. `None` where any read is in a shape this does not
+/// recognise, so a form it has never seen keeps the sampler rather than emitting GLSL that will not
+/// compile.
+fn without(source: &str, name: &str) -> Option<String> {
+    let mut out = String::with_capacity(source.len());
+    let mut value = None;
+    for line in source.lines() {
+        let held = line.trim_start();
+        if held.starts_with("uniform ") && held.contains("sampler") && held.contains(name) {
+            // `g_SamplerAuraTexture` is a prefix of `g_SamplerAuraTexture1`, so the declaration has
+            // to name this sampler and not merely start with it.
+            let Some(at) = held.find(name) else { continue };
+            if !token_at(held, at, name) {
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+            value = Some(stand_in_value(held));
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    let value = value?;
+
+    let mut held = out;
+    while let Some(at) = held
+        .match_indices(name)
+        .find(|(at, _)| token_at(&held, *at, name))
+        .map(|(at, _)| at)
+    {
+        // Back over the '(' and the call it belongs to, which is the whole expression the constant
+        // stands for.
+        let before = held[..at].trim_end();
+        let open = before.strip_suffix('(')?;
+        let call = open.trim_end();
+        let start = call.len() - call.chars().rev().take_while(|held| held.is_alphanumeric()).count();
+        if !SAMPLING.contains(&&call[start..]) {
+            return None;
+        }
+        let mut depth = 0usize;
+        let mut end = None;
+        for (offset, held) in held[open.len()..].char_indices() {
+            match held {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(open.len() + offset + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        held.replace_range(start..end?, value);
+    }
+    Some(held)
+}
+
+/// The source with as few samplers shed as clears the ceiling, and unchanged where it already
+/// fits. Sheds only what nothing binds before reaching for the cube, so a pass that fits without
+/// losing anything loses nothing.
+fn shed(source: &str, ceiling: usize) -> String {
+    let mut held = source.to_owned();
+    for name in NEVER_BOUND.iter().chain(LAST_RESORT.iter()) {
+        if ceiling == 0 || fragment_samplers(&held) <= ceiling {
+            break;
+        }
+        if let Some(shorter) = without(&held, name) {
+            held = shorter;
+        }
+    }
+    held
+}
+
 pub fn build_pair(
     gl: &glow::Context,
     vertex: &str,
@@ -5025,8 +5145,19 @@ pub fn build_pair(
 ) -> Result<glow::Program, String> {
     // Answered before compiling rather than after linking: the driver's own message names the limit
     // but not the shader, and a doomed pair costs a compile of both stages to find out.
-    let wanted = fragment_samplers(fragment);
     let ceiling = max_texture_units(gl);
+    // Over the ceiling, the pass still runs: the samplers nothing ever binds a texture to read the
+    // flat stand-in and nothing else, so standing that constant in their place draws the same frame
+    // a unit cheaper. Only a pass still over budget after that is refused.
+    let shed_source;
+    let fragment = match ceiling > 0 && fragment_samplers(fragment) > ceiling {
+        true => {
+            shed_source = shed(fragment, ceiling);
+            shed_source.as_str()
+        }
+        false => fragment,
+    };
+    let wanted = fragment_samplers(fragment);
     if ceiling > 0 && wanted > ceiling {
         return Err(format!(
             "the fragment shader reads {wanted} textures and this device offers {ceiling}"
@@ -5081,6 +5212,50 @@ pub fn build_pair(
 
 #[cfg(test)]
 mod test {
+    /// A sampler nothing binds reads the flat stand-in and nothing else, so the constant that
+    /// stand-in reads back as draws the same frame.
+    #[test]
+    fn shedding_an_unbound_sampler_leaves_what_it_read_behind() {
+        let source = "uniform sampler2D g_SamplerNormal;\n\
+             uniform sampler2D g_SamplerAuraTexture;\n\
+             void main() { vec4 a = texture(g_SamplerAuraTexture, v_uv); }\n";
+        let held = super::without(source, "g_SamplerAuraTexture").expect("shed");
+        assert!(!held.contains("g_SamplerAuraTexture"));
+        assert!(held.contains("vec4 a = vec4(0.5019608, 0.5019608, 0.5019608, 1.0);"));
+        // The sampler beside it is untouched.
+        assert!(held.contains("uniform sampler2D g_SamplerNormal;"));
+    }
+
+    /// The declaration has to name the sampler rather than merely begin with it, or shedding
+    /// `g_SamplerAuraTexture` takes `g_SamplerAuraTexture1` down with it.
+    #[test]
+    fn a_longer_name_is_not_shed_by_a_shorter_one() {
+        let source = "uniform sampler2D g_SamplerAuraTexture1;\n\
+             void main() { vec4 a = texture(g_SamplerAuraTexture1, v_uv); }\n";
+        assert!(super::without(source, "g_SamplerAuraTexture").is_none());
+    }
+
+    /// `textureSize` answers a dimension, not a texel, so a constant cannot stand for it and the
+    /// sampler is kept instead of emitting GLSL that would not compile.
+    #[test]
+    fn a_read_in_a_shape_this_does_not_know_keeps_its_sampler() {
+        let source = "uniform sampler2D g_SkySampler;\n\
+             void main() { vec2 a = vec2(textureSize(g_SkySampler, 0)); }\n";
+        assert!(super::without(source, "g_SkySampler").is_none());
+    }
+
+    /// Nothing is shed while the pass already fits, and only as much as the ceiling needs.
+    #[test]
+    fn a_pass_that_fits_shed_nothing_and_one_over_sheds_one() {
+        let two = "uniform sampler2D g_SamplerAuraTexture;\n\
+             uniform sampler2D g_SamplerAuraTexture1;\n\
+             void main() { vec4 a = texture(g_SamplerAuraTexture, v) + texture(g_SamplerAuraTexture1, v); }\n";
+        assert_eq!(super::shed(two, 2), two);
+        let held = super::shed(two, 1);
+        assert_eq!(super::fragment_samplers(&held), 1);
+        assert!(held.contains("g_SamplerAuraTexture1"));
+    }
+
     /// Only the fragment stage is weighed, and a texture read through two samplers is declared
     /// twice, so the count comes off the source rather than off the pair's resource list.
     #[test]
