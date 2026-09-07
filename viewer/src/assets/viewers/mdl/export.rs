@@ -849,9 +849,10 @@ fn shade_texel(
     // The wearer's own colours, which no texture holds.
     let tinted = tint(&material.package, unit_mask, customize);
     albedo = [albedo[0] * tinted[0], albedo[1] * tinted[1], albedo[2] * tinted[2]];
-    // A lip is a tint laid over the skin by the weight the face's own normal map states, not a
-    // colour of its own.
-    if material.package == "skin.shpk" {
+    // A lip is a tint laid over the face by the weight that face's own normal map states, not a
+    // colour of its own. Gated on the face rather than on `skin.shpk`, which also dresses bodies,
+    // hands and feet: the alpha was read off a face map and nothing says a body's holds the same.
+    if material.package == "skin.shpk" && material.name.contains("_fac_") {
         let weight = sampled[3] * customize.lip[3];
         albedo = std::array::from_fn(|i| albedo[i] + (customize.lip[i] - albedo[i]) * weight);
     }
@@ -1283,10 +1284,8 @@ fn material_json(info: &MaterialInfo, baked: &BakedMaterial, writer: &mut Writer
         }
     }
     material["pbrMetallicRoughness"] = Value::Object(pbr);
-    let sheer = match baked {
-        BakedMaterial::Baked { sheer, .. } => *sheer,
-        BakedMaterial::Flat { base_color, .. } => base_color[3] < 1.0,
-    };
+    // The flat fallback is a solid grey, so only a baked material can come out short of opaque.
+    let sheer = matches!(baked, BakedMaterial::Baked { sheer: true, .. });
     match alpha_mode(info.translucent, info.alpha_threshold, sheer) {
         "MASK" => {
             material["alphaMode"] = json!("MASK");

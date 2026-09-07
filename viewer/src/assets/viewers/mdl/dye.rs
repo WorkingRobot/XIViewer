@@ -212,7 +212,7 @@ pub(super) mod test {
         bytes
     }
 
-    pub fn templates(key: u32) -> Templates {
+    pub(in super::super) fn templates(key: u32) -> Templates {
         // diffuse, specular, emissive, then the nine scalars in template order.
         let columns = [
             color(0.4),
@@ -239,7 +239,7 @@ pub(super) mod test {
 
     /// A material carrying nothing but a full-size extended color table, every row zero, and a
     /// dye table naming the rows in `dye` by index.
-    pub fn extended_material(dye: &[(u16, u8, u16)]) -> Vec<u8> {
+    pub(in super::super) fn extended_material(dye: &[(u16, u8, u16)]) -> Vec<u8> {
         let mut table = vec![0u16; 32 * 32];
         for &(template, channel, fields) in dye {
             let bits = u32::from(fields) | (u32::from(template) << 16) | (u32::from(channel) << 27);
