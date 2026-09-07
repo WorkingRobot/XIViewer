@@ -789,9 +789,9 @@ async fn build_songs(sheet: &str) -> anyhow::Result<String> {
 /// BNpc base -> crowdsourced name ids, distilled from FFXIVGachaSpreadsheet's pairing dumps.
 const BNPC_DATA: &str = "https://raw.githubusercontent.com/Infiziert90/FFXIVGachaSpreadsheet/master/website/static/data/";
 const BNPC_TTL: Duration = Duration::from_secs(12 * 60 * 60);
-/// Held gzipped, which is what nearly every caller wants and a fraction of the size. Freshness is
-/// `prewarm_bnpc`'s job, so a stale map outlives an upstream outage rather than 500ing behind it.
-static BNPC_CACHE: LazyLock<Mutex<Option<Bytes>>> = LazyLock::new(|| Mutex::new(None));
+/// Held gzipped, which is what nearly every caller wants and a fraction of the size.
+type BnpcCache = Mutex<Option<(Instant, Bytes)>>;
+static BNPC_CACHE: LazyLock<BnpcCache> = LazyLock::new(|| Mutex::new(None));
 
 #[derive(Deserialize)]
 struct BnpcSimple {
@@ -819,15 +819,7 @@ struct BnpcPairings {
 
 #[get("/bnpc/")]
 async fn get_bnpc(request: HttpRequest) -> Result<HttpResponse> {
-    let held = BNPC_CACHE.lock().unwrap().clone();
-    let body = match held {
-        Some(body) => body,
-        None => {
-            let body = build_bnpc().await.map_err(ErrorInternalServerError)?;
-            *BNPC_CACHE.lock().unwrap() = Some(body.clone());
-            body
-        }
-    };
+    let body = bnpc().await?;
 
     let mut response = HttpResponse::Ok();
     response
@@ -850,17 +842,28 @@ async fn get_bnpc(request: HttpRequest) -> Result<HttpResponse> {
     Ok(response.body(plain))
 }
 
-/// Keeps the pairing map hot, so the first client is not the one that waits for the upstream dumps.
-pub fn prewarm_bnpc() {
-    tokio::spawn(async {
-        loop {
-            match build_bnpc().await {
-                Ok(body) => *BNPC_CACHE.lock().unwrap() = Some(body),
-                Err(error) => log::warn!("Could not prewarm BNpc names: {error}"),
-            }
-            tokio::time::sleep(BNPC_TTL).await;
+/// The distilled map, rebuilt when it ages out. A refresh that fails is served stale rather than
+/// passed on: last night's names beat none.
+async fn bnpc() -> Result<Bytes> {
+    let known = BNPC_CACHE.lock().unwrap().clone();
+    if let Some((fetched, body)) = &known
+        && fetched.elapsed() < BNPC_TTL
+    {
+        return Ok(body.clone());
+    }
+    match build_bnpc().await {
+        Ok(body) => {
+            *BNPC_CACHE.lock().unwrap() = Some((Instant::now(), body.clone()));
+            Ok(body)
         }
-    });
+        Err(error) => match known {
+            Some((_, stale)) => {
+                log::warn!("Serving stale BNpc names: {error}");
+                Ok(stale)
+            }
+            None => Err(ErrorInternalServerError(error)),
+        },
+    }
 }
 
 async fn build_bnpc() -> anyhow::Result<Bytes> {
