@@ -5256,6 +5256,28 @@ mod test {
         assert!(held.contains("g_SamplerAuraTexture1"));
     }
 
+    /// The cube is shed last: it falls back to the reflection texture rather than to the flat
+    /// stand-in, so losing it costs something the rest do not.
+    #[test]
+    fn the_reflection_cube_is_the_last_one_shed() {
+        let source = "uniform samplerCube g_SamplerReflectionArray;\n\
+             uniform sampler2D g_SamplerAuraTexture;\n\
+             void main() { vec4 a = texture(g_SamplerReflectionArray, v) + texture(g_SamplerAuraTexture, v); }\n";
+        let held = super::shed(source, 1);
+        assert!(held.contains("g_SamplerReflectionArray"));
+        assert!(!held.contains("g_SamplerAuraTexture"));
+    }
+
+    /// An unsigned sampler reads back unsigned, and standing a float constant in its place is a
+    /// type error rather than a shed.
+    #[test]
+    fn an_unsigned_sampler_stands_in_as_unsigned() {
+        let source = "uniform usampler2D g_SamplerAuraTexture;\n\
+             void main() { uvec4 a = texture(g_SamplerAuraTexture, v); }\n";
+        let held = super::without(source, "g_SamplerAuraTexture").expect("shed");
+        assert!(held.contains("uvec4 a = uvec4(128u, 128u, 128u, 255u);"));
+    }
+
     /// Only the fragment stage is weighed, and a texture read through two samplers is declared
     /// twice, so the count comes off the source rather than off the pair's resource list.
     #[test]
