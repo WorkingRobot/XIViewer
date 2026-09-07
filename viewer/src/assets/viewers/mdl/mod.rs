@@ -187,6 +187,16 @@ struct Camera {
 }
 
 impl Camera {
+    /// The same framing about a body drawn at `stature`: a model twice the size its files state is
+    /// twice as far away and twice as high up, or the camera stands inside it.
+    fn scaled(self, stature: f32) -> Self {
+        Self {
+            distance: self.distance * stature,
+            target: self.target * stature,
+            ..self
+        }
+    }
+
     fn eye(&self) -> Vec3 {
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
@@ -1392,7 +1402,7 @@ pub fn ui(ui: &mut egui::Ui, model: &Rendered, backend: &Backend) {
             }
         }
         if ui.button("Reset view").clicked() {
-            model.camera.set(level.home);
+            model.camera.set(level.home.scaled(model.stature.get()));
         }
         let (arrived, wanted) = model.arrived();
         if arrived < wanted {
@@ -2382,8 +2392,8 @@ impl Rendered {
             camera.target += (right * -delta.x + Vec3::Y * delta.y) * scale;
         };
         let zoom = |camera: &mut Camera, scale: f32| {
-            camera.distance = (camera.distance * scale)
-                .clamp(level.home.distance * 0.02, level.home.distance * 20.0);
+            let home = level.home.distance * self.stature.get();
+            camera.distance = (camera.distance * scale).clamp(home * 0.02, home * 20.0);
         };
 
         // A second finger takes the gesture over: egui carries on reporting a primary drag through
@@ -2514,8 +2524,13 @@ impl Rendered {
         *self.fired.borrow_mut() = firing;
         // Carried rather than written into the camera, so a motion that walks runs in place and the
         // user's own orbit, pan and zoom still mean what they did.
-        let focus = level.home.target + pose.drift;
-        let reach = level.radius + pose.stretch;
+        // The model is drawn at whatever size it states, so every world-space extent the frame is
+        // built from has to be the size it is actually drawn at rather than the size its files
+        // were modelled at. A body at twelve lit by a box built for one is dark everywhere the box
+        // does not reach, which is most of it.
+        let radius = level.radius * self.stature.get();
+        let focus = level.home.target * self.stature.get() + pose.drift;
+        let reach = radius + pose.stretch;
 
         let target = camera.target + pose.drift;
         let eye = camera.eye() + pose.drift;
@@ -2526,7 +2541,7 @@ impl Rendered {
         let near = (span - reach).max(reach * 0.005);
         // Past the light box's own far corner rather than past the model, since the volume a lamp
         // is drawn as is clipped by these planes whether or not anything depth tests against them.
-        let far = span + reach.max(level.radius * (1.0 + LAMP_SPAN * 2.0));
+        let far = span + reach.max(radius * (1.0 + LAMP_SPAN * 2.0));
         let projection = Mat4::perspective_rh_gl(FOV, rect.width() / rect.height(), near, far);
 
         // Fill and rim follow the camera; a fill weighted toward the eye is the whole of what keeps
@@ -2560,7 +2575,7 @@ impl Rendered {
         // A cell of about half the model's radius, snapped to a one, a two or a five. Only the model
         // says what scale to rule at, and a bare decade is a tenfold jump: it leaves a piece of
         // landscape standing in one cell or a character ruled into mush.
-        let cell = level.radius * 0.5;
+        let cell = level.radius * self.stature.get() * 0.5;
         let decade = 10f32.powf(cell.log10().floor());
         let step = decade
             * match cell / decade {
@@ -2595,11 +2610,11 @@ impl Rendered {
                 light: KEY,
                 lamp: program::Lamp {
                     placement: Mat4::from_translation(
-                        target + Vec3::new(0.0, level.radius, level.radius),
+                        target + Vec3::new(0.0, radius, radius),
                     ),
-                    min: Vec3::splat(-level.radius * LAMP_SPAN),
-                    max: Vec3::splat(level.radius * LAMP_SPAN),
-                    reach: level.radius * LAMP_SPAN,
+                    min: Vec3::splat(-radius * LAMP_SPAN),
+                    max: Vec3::splat(radius * LAMP_SPAN),
+                    reach: radius * LAMP_SPAN,
                     color: Vec3::splat(LAMP_FILL),
                     ..Default::default()
                 },
@@ -3615,7 +3630,7 @@ impl Rendered {
         // Getting on or off a mount is a whole second body coming and going rather than a change of
         // clothes, so the view is framed on what is there now.
         if rode.as_deref() != self.animation.rides() {
-            self.camera.set(self.level.borrow().home);
+            self.camera.set(self.level.borrow().home.scaled(self.stature.get()));
         }
         Ok(())
     }
@@ -3865,7 +3880,28 @@ impl Rendered {
 
 #[cfg(test)]
 mod tests {
-    use super::{Source, compose};
+    use glam::Vec3;
+
+    use super::{Camera, Source, compose};
+
+    /// A body drawn at twelve lit by a box built for one is dark everywhere the box does not reach,
+    /// and a camera framed for one stands inside it.
+    #[test]
+    fn a_scaled_body_is_framed_at_the_size_it_is_drawn() {
+        let home = Camera {
+            yaw: 0.5,
+            pitch: 0.25,
+            distance: 3.0,
+            target: Vec3::new(0.0, 1.0, 0.0),
+        };
+        let held = home.scaled(12.0);
+        assert_eq!(held.distance, 36.0);
+        assert_eq!(held.target, Vec3::new(0.0, 12.0, 0.0));
+        // The angles are the framing rather than the size, so they are left alone.
+        assert_eq!((held.yaw, held.pitch), (home.yaw, home.pitch));
+        let same = home.scaled(1.0);
+        assert_eq!((same.distance, same.target), (home.distance, home.target));
+    }
 
     /// `w5341b0001`'s `.imc` names material nought for the one variant it carries, which is the
     /// game stating that the weapon draws no material at all: worn at that variant it contributes
