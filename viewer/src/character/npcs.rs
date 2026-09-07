@@ -413,3 +413,30 @@ pub async fn beasts(
     log::info!("character: {} creatures to stand as", found.len());
     Ok(found)
 }
+
+/// The body a beast's own files sit under, which is what names the packs it is posed from.
+pub fn body_code(under: &str) -> Option<String> {
+    under
+        .split('/')
+        .nth(2)
+        .filter(|held| !held.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn a_body_is_named_by_the_directory_its_own_files_sit_under() {
+        assert_eq!(
+            body_code("chara/monster/m0886/obj/body/b0001/model/"),
+            Some("m0886".to_owned())
+        );
+        // The set a demihuman wears is a directory of its own, and is not the body.
+        assert_eq!(
+            body_code("chara/demihuman/d1003/obj/equipment/e0001/model/"),
+            Some("d1003".to_owned())
+        );
+    }
+}

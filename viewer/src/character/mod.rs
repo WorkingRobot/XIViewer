@@ -1677,6 +1677,10 @@ impl CharacterBuilder {
     /// carry animation of their own: a child's is the one child body's, and a Highlander man's is
     /// the Midlander's.
     fn lineage(&self) -> Vec<String> {
+        // A creature is posed from packs under its own body, and is built on nothing else.
+        if let Some(beast) = self.beast.and_then(|at| self.beasts.get(at)) {
+            return npcs::body_code(&beast.under).into_iter().collect();
+        }
         let Some(deformers) = &self.deformers else {
             return Vec::new();
         };
