@@ -2719,6 +2719,7 @@ impl Scene {
         self.load_effects(backend);
         self.load_effect_packages(backend);
         self.sound.poll(backend, self.camera.position);
+        self.ambient.stand_in(self.camera.position);
         self.ambient.poll(backend);
         self.expand(backend, until);
         if self.fitted == 0 && !self.placements.is_empty() {

@@ -14,7 +14,7 @@ use std::ops::RangeInclusive;
 
 use anyhow::Result;
 use egui::RichText;
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 use ironworks::file::amb::{self, Ambient as AmbientFile, TRACK_COUNT};
 use ironworks::file::envs::{Keyframe, Value};
 use ironworks::file::{File, envb, layer};
@@ -160,6 +160,19 @@ pub struct Space {
     pub bound: u32,
 }
 
+impl Space {
+    /// Whether a place stands inside it. The shape codes are the file's own, the same three the
+    /// composite tests each pixel against.
+    fn holds(&self, at: Vec3) -> bool {
+        let local = self.placement.inverse().transform_point3(at);
+        match self.shape.to_bits() {
+            1 => local.length() <= 1.0,
+            3 => local.y.abs() <= 1.0 && Vec2::new(local.x, local.z).length() <= 1.0,
+            _ => local.abs().cmple(Vec3::ONE).all(),
+        }
+    }
+}
+
 /// One of the environments a scene applies over part of itself.
 struct Environment {
     envb: String,
@@ -187,6 +200,8 @@ struct Lighting {
 pub struct Ambient {
     environments: Vec<Environment>,
     at: usize,
+    /// The environment the eye last stood in, so a hand-picked one is not taken away every frame.
+    stood: Option<usize>,
     /// Which environment the loaded files belong to, so moving the picker fetches again.
     loaded: Option<usize>,
     weather_file: Held<envb::EnvironmentFile>,
@@ -242,6 +257,7 @@ impl Ambient {
         Self {
             environments,
             at: 0,
+            stood: None,
             loaded: None,
             weather_file: Held::Idle,
             locations: Vec::new(),
@@ -381,6 +397,29 @@ impl Ambient {
         let times: Vec<f32> = held.iter().map(Keyframe::time).collect();
         let (before, after, share) = between(&times, self.time)?;
         Some((&held[before], &held[after], share))
+    }
+
+    /// Takes up the environment of the volume the eye stands in, which is what the game picks by
+    /// rather than by a list. Only where that volume changes, so a hand-picked one stays until the
+    /// camera leaves the place it was picked for.
+    pub fn stand_in(&mut self, eye: Vec3) {
+        let bound = self
+            .spaces
+            .iter()
+            .rev()
+            .find(|space| space.holds(eye))
+            .map(|space| space.bound);
+        let at = bound
+            .and_then(|bound| {
+                self.environments
+                    .iter()
+                    .position(|env| env.instance == bound)
+            })
+            .unwrap_or_default();
+        if self.stood != Some(at) {
+            self.stood = Some(at);
+            self.at = at;
+        }
     }
 
     /// What the `.envb` states for the weather and time the panel stands at.
