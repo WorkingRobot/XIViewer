@@ -2189,7 +2189,7 @@ impl CharacterBuilder {
         }
         // Nothing in the game pairs a battle character with its name, so with the pairing
         // unreachable there is no list to offer rather than a list that is merely empty.
-        if self.beasts.is_empty() && self.reading_beasts.is_none() {
+        if self.beasts.is_empty() && self.reading_beasts.is_none() && self.listing.is_some() {
             ui.weak("No creature names available.");
             return None;
         }
@@ -2766,6 +2766,7 @@ impl CharacterBuilder {
             Some(Pick::Job(job)) => self.job = job,
             Some(Pick::Npc(npc)) => {
                 self.npc = Some(npc);
+                self.beast = None;
                 if let Some(held) = self.npcs.get(npc) {
                     self.race = held.race;
                     self.tribe = held.tribe;
@@ -2815,12 +2816,23 @@ impl CharacterBuilder {
             }
             Some(Pick::Mount(mount)) => {
                 self.mount = mount;
+                if mount.is_some() {
+                    self.beast = None;
+                }
                 self.mount_seat = 0;
                 // Nothing sits down on a mount: it states the seat it holds a rider in.
                 self.posture = emotes::Posture::Standing;
                 self.pose = 0;
             }
-            Some(Pick::Beast(beast)) => self.beast = beast,
+            Some(Pick::Beast(beast)) => {
+                self.beast = beast;
+                // A creature is drawn instead of the built body, so nothing the body was carrying
+                // is drawn either: leaving them picked would light a control nothing answers.
+                if beast.is_some() {
+                    self.mount = None;
+                    self.npc = None;
+                }
+            }
             Some(Pick::Seat(seat)) => self.mount_seat = seat,
             Some(Pick::Weapon(weapon)) => self.main_hand = weapon,
             Some(Pick::OffHand(weapon)) => self.off_hand = weapon,
