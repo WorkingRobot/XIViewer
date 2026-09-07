@@ -95,6 +95,7 @@ async fn main() -> Result<(), ServerError> {
     let server_game_data = MessageQueue::new(game_data.clone(), path_index, config.api_workers)?;
 
     routes::github::prewarm();
+    routes::api::prewarm_bnpc();
 
     log::info!("Binding to {}", config.server_addr);
     let server = HttpServer::new(move || {

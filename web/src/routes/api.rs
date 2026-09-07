@@ -53,6 +53,7 @@ pub fn service() -> impl HttpServiceFactory {
         .service(post_report)
         .service(get_global_paths)
         .service(get_songs)
+        .service(get_bnpc)
         .service(get_versions_repo)
         .service(get_latest_repo)
         .service(get_file_repo)
@@ -785,6 +786,116 @@ async fn build_songs(sheet: &str) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&Value::Object(songs))?)
 }
 
+/// BNpc base -> crowdsourced name ids, distilled from FFXIVGachaSpreadsheet's pairing dumps.
+const BNPC_DATA: &str =
+    "https://raw.githubusercontent.com/Infiziert90/FFXIVGachaSpreadsheet/master/website/static/data/";
+const BNPC_TTL: Duration = Duration::from_secs(12 * 60 * 60);
+type BnpcCache = Mutex<Option<(Instant, Arc<String>)>>;
+static BNPC_CACHE: LazyLock<BnpcCache> = LazyLock::new(|| Mutex::new(None));
+
+#[derive(Deserialize)]
+struct BnpcSimple {
+    #[serde(rename = "Base")]
+    base: u32,
+    #[serde(rename = "Names")]
+    names: Vec<u32>,
+}
+
+#[derive(Deserialize)]
+struct BnpcSighting {
+    #[serde(rename = "Base")]
+    base: u32,
+    #[serde(rename = "Name")]
+    name: u32,
+    #[serde(rename = "Records")]
+    records: u64,
+}
+
+#[derive(Deserialize)]
+struct BnpcPairings {
+    #[serde(rename = "BnpcPairings")]
+    pairings: HashMap<String, BnpcSighting>,
+}
+
+#[get("/bnpc/")]
+async fn get_bnpc() -> Result<HttpResponse> {
+    let cached = BNPC_CACHE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|(fetched, _)| fetched.elapsed() < BNPC_TTL)
+        .map(|(_, json)| json.clone());
+
+    let json = match cached {
+        Some(json) => json,
+        None => {
+            let json = Arc::new(build_bnpc().await.map_err(ErrorInternalServerError)?);
+            *BNPC_CACHE.lock().unwrap() = Some((Instant::now(), json.clone()));
+            json
+        }
+    };
+
+    Ok(HttpResponse::Ok()
+        .insert_header(CacheControl(vec![
+            CacheDirective::Public,
+            CacheDirective::MaxAge(60 * 60 * 12),
+        ]))
+        .content_type("application/json")
+        .body(json.as_ref().clone()))
+}
+
+/// Keeps the pairing map hot, so the first client is not the one that waits for the upstream dumps.
+pub fn prewarm_bnpc() {
+    tokio::spawn(async {
+        loop {
+            match build_bnpc().await {
+                Ok(json) => *BNPC_CACHE.lock().unwrap() = Some((Instant::now(), Arc::new(json))),
+                Err(error) => log::warn!("Could not prewarm BNpc names: {error}"),
+            }
+            tokio::time::sleep(BNPC_TTL).await;
+        }
+    });
+}
+
+async fn build_bnpc() -> anyhow::Result<String> {
+    let client = reqwest::Client::new();
+    let simple: Vec<BnpcSimple> = client
+        .get(format!("{BNPC_DATA}BnpcPairsSimple.json"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let seen: BnpcPairings = client
+        .get(format!("{BNPC_DATA}BnpcPairsV2.json"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    distil(simple, seen)
+}
+
+fn distil(simple: Vec<BnpcSimple>, seen: BnpcPairings) -> anyhow::Result<String> {
+    let mut sightings: HashMap<(u32, u32), u64> = HashMap::new();
+    for held in seen.pairings.into_values() {
+        *sightings.entry((held.base, held.name)).or_default() += held.records;
+    }
+
+    // A base wearing several names is only ambiguous on paper: the one sighted most is the one it
+    // goes by, so the caller can take the head of the list and ignore the tail.
+    let mut bases = Map::new();
+    for BnpcSimple { base, mut names } in simple {
+        names.sort_by_key(|&name| {
+            std::cmp::Reverse(sightings.get(&(base, name)).copied().unwrap_or(0))
+        });
+        bases.insert(base.to_string(), Value::from(names));
+    }
+
+    Ok(serde_json::to_string(&Value::Object(bases))?)
+}
+
 fn log_error<B: MessageBody + 'static>(
     is_client: bool,
     res: ServiceResponse<B>,
@@ -837,6 +948,38 @@ mod tests {
 
     use super::*;
     use crate::{config::Report, paths::PathIndex};
+
+
+    #[actix_web::test]
+    async fn a_base_takes_the_name_it_was_sighted_under_most() {
+        let simple = vec![BnpcSimple {
+            base: 7,
+            names: vec![20, 9, 44],
+        }];
+        let seen = BnpcPairings {
+            pairings: HashMap::from([
+                (
+                    "a".to_owned(),
+                    BnpcSighting {
+                        base: 7,
+                        name: 20,
+                        records: 3,
+                    },
+                ),
+                (
+                    "b".to_owned(),
+                    BnpcSighting {
+                        base: 7,
+                        name: 9,
+                        records: 100,
+                    },
+                ),
+            ]),
+        };
+
+        // 44 was never sighted, so it sorts behind both.
+        assert_eq!(distil(simple, seen).unwrap(), r#"{"7":[9,20,44]}"#);
+    }
 
     fn collector() -> web::Data<Collector> {
         web::Data::new(Collector::new(
