@@ -177,13 +177,6 @@ pub struct Vertex {
     bones: [u16; 4],
 }
 
-impl Vertex {
-    /// Where the vertex sits in the model's own space, for a caller measuring what a model fills.
-    pub(super) fn position(&self) -> [f32; 3] {
-        self.position
-    }
-}
-
 /// Where the camera is looking from.
 #[derive(Clone, Copy)]
 struct Camera {

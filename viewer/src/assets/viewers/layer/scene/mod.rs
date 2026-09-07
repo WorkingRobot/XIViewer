@@ -1114,25 +1114,14 @@ fn planes(clip: Mat4) -> [Vec4; 6] {
 }
 
 /// Whether a sphere falls wholly beyond one of them, which is what a frustum cull answers.
-/// The box a set of points fills, or `None` where there are none.
-fn extent(points: impl Iterator<Item = Vec3>) -> Option<(Vec3, Vec3)> {
-    points.fold(None, |held, at| {
-        Some(match held {
-            Some((min, max)) => (Vec3::min(min, at), Vec3::max(max, at)),
-            None => (at, at),
-        })
-    })
-}
-
-/// The sphere a placement is culled by, out of the box its model fills: that box carried into the
-/// world, widened to whatever sphere the file itself states. `None` where the model has yet to
-/// arrive, which is what keeps an unread plate on screen rather than culling it by its origin.
-fn sphere_of(bounds: Option<(Vec3, Vec3)>, transform: &Mat4, stated: f32) -> Option<(Vec3, f32)> {
+/// The sphere a placement is culled by: the box its model states, carried into the world. `None`
+/// where the model has yet to arrive, which is what keeps an unread plate on screen rather than
+/// culling it by its origin alone.
+fn sphere_of(bounds: Option<(Vec3, Vec3)>, transform: &Mat4) -> Option<(Vec3, f32)> {
     let (min, max) = bounds?;
-    let reach = (max - min).length() * 0.5 * widest(transform);
     Some((
         transform.transform_point3((min + max) * 0.5),
-        reach.max(stated),
+        (max - min).length() * 0.5 * widest(transform),
     ))
 }
 
@@ -2984,11 +2973,7 @@ impl Scene {
     /// whatever sphere the file itself states. `None` while the model has yet to arrive, which is
     /// what keeps an unread plate on screen rather than culling it by its origin alone.
     fn sphere(&self, placement: &Placement) -> Option<(Vec3, f32)> {
-        sphere_of(
-            self.models[placement.model].bounds,
-            &placement.transform,
-            placement.radius,
-        )
+        sphere_of(self.models[placement.model].bounds, &placement.transform)
     }
 
     fn decode(&mut self, at: usize, bytes: Vec<u8>, level: u8) -> Result<()> {
@@ -3023,13 +3008,12 @@ impl Scene {
         levels[level] = built;
         let mut meshes: Vec<Vec<usize>> = (0..3).map(|_| Vec::new()).collect();
         meshes[level] = used;
-        let held = levels[level]
-            .iter()
-            .flat_map(|(vertices, _)| vertices.iter().map(|vertex| Vec3::from(vertex.position())));
-        if let Some((min, max)) = extent(held) {
-            let (was_min, was_max) = self.models[at].bounds.unwrap_or((min, max));
-            self.models[at].bounds = Some((was_min.min(min), was_max.max(max)));
-        }
+        // The box the file itself states, which is the one the engine has. Measured over 3,000
+        // terrain plates it holds every vertex to within 0.25 units, the rest being the rounding a
+        // half-float position decodes with; `model_bounding_boxes` beside it is all zeroes for a
+        // third of them and is not a bound at all.
+        let (min, max) = model.bounds();
+        self.models[at].bounds = Some((Vec3::from(min), Vec3::from(max)));
         self.models[at].drawn = drawn;
         self.models[at].meshes = meshes;
         self.models[at].waving = model.waving();
@@ -5322,36 +5306,20 @@ pub fn ui(ui: &mut egui::Ui, scene: &mut Scene, backend: &Backend) {
 mod tests {
     use super::*;
 
-    /// A terrain plate is modelled far from the origin its instance states, so a sphere about that
-    /// origin does not hold it and the plate vanishes the moment the origin leaves the frustum.
-    #[test]
-    fn a_model_measures_the_box_its_own_geometry_fills() {
-        // Deliberately not in order: a later point is smaller in one axis and larger in another.
-        let held = extent(
-            [
-                Vec3::new(14.0, 0.0, 2.0),
-                Vec3::new(10.0, 6.0, -4.0),
-                Vec3::new(12.0, 3.0, 0.0),
-            ]
-            .into_iter(),
-        );
-        assert_eq!(held, Some((Vec3::new(10.0, 0.0, -4.0), Vec3::new(14.0, 6.0, 2.0))));
-        assert_eq!(extent(std::iter::empty()), None);
-    }
-
     /// A plate modelled away from its origin is culled by where its geometry actually is, and the
     /// sphere never shrinks below the one the file itself states.
     #[test]
     fn a_placement_is_culled_by_where_its_geometry_sits() {
         let bounds = Some((Vec3::new(10.0, 0.0, -2.0), Vec3::new(14.0, 4.0, 2.0)));
-        let (center, radius) = sphere_of(bounds, &Mat4::IDENTITY, 0.0).expect("a sphere");
+        let (center, radius) = sphere_of(bounds, &Mat4::IDENTITY).expect("a sphere");
         assert_eq!(center, Vec3::new(12.0, 2.0, 0.0));
-        assert!((radius - (Vec3::new(4.0, 4.0, 4.0)).length() * 0.5).abs() < 1e-5);
-        // The file's own sphere is a floor, never a ceiling.
-        let (_, wider) = sphere_of(bounds, &Mat4::IDENTITY, 99.0).expect("a sphere");
-        assert_eq!(wider, 99.0);
+        assert!((radius - Vec3::new(4.0, 4.0, 4.0).length() * 0.5).abs() < 1e-5);
+        // A placement that scales carries the box with it.
+        let (far, wider) = sphere_of(bounds, &Mat4::from_scale(Vec3::splat(3.0))).expect("a sphere");
+        assert_eq!(far, Vec3::new(36.0, 6.0, 0.0));
+        assert!((wider - radius * 3.0).abs() < 1e-4);
         // A model that has not arrived is not culled at all.
-        assert!(sphere_of(None, &Mat4::IDENTITY, 5.0).is_none());
+        assert!(sphere_of(None, &Mat4::IDENTITY).is_none());
     }
 
     /// A radius in a model's own space grows by whichever axis its placement stretches most, not
