@@ -408,7 +408,7 @@ fn primitive_from(
             tangents.push(tangent_frame(vertex).unwrap_or_else(|| safe_tangent(vertex.normal)));
         }
         uv0.push([vertex.uv[0], vertex.uv[1]]);
-        colors.push(vertex.color);
+        colors.push(vertex_color(vertex.color));
         if let Some((local_bones, joints)) = skinning {
             let (j0, w0, j1, w1, second) =
                 skin_vertex(vertex, local_bones, joints, fallback, missing, wanted);
@@ -433,6 +433,14 @@ fn primitive_from(
         weights1: needs_second.then_some(weights1),
         indices,
     }
+}
+
+/// What a vertex's own colour contributes to a glTF one. Only the alpha is an opacity: `model.frag`
+/// reads `v_color.a` and nothing else, so the rgb carries per-family shader inputs rather than a
+/// tint, and a consumer multiplying `COLOR_0` into the base colour would paint the surface with
+/// them. An iris is the one case that wants an actual colour there; [`eye_color`] supplies it.
+fn vertex_color(raw: [u8; 4]) -> [u8; 4] {
+    [255, 255, 255, raw[3]]
 }
 
 /// Any unit vector orthogonal to `normal`, for the rare vertex whose declared frame is degenerate.
@@ -1113,6 +1121,14 @@ pub(super) async fn finish(scene: Scene, files: &dyn FileProvider) -> Result<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_vertex_colour_carries_its_opacity_and_tints_nothing() {
+        // An iris mesh's own colour is the side select, not a colour: exporting it as one paints
+        // one eye red and the other green.
+        assert_eq!(vertex_color([255, 0, 0, 255]), [255, 255, 255, 255]);
+        assert_eq!(vertex_color([0, 255, 0, 128]), [255, 255, 255, 128]);
+    }
 
     fn vertex(position: [f32; 3], normal: [f32; 3]) -> Vertex {
         // `Vertex`'s fields are private to `mdl` but visible to this descendant module.
