@@ -1124,6 +1124,18 @@ fn extent(points: impl Iterator<Item = Vec3>) -> Option<(Vec3, Vec3)> {
     })
 }
 
+/// The sphere a placement is culled by, out of the box its model fills: that box carried into the
+/// world, widened to whatever sphere the file itself states. `None` where the model has yet to
+/// arrive, which is what keeps an unread plate on screen rather than culling it by its origin.
+fn sphere_of(bounds: Option<(Vec3, Vec3)>, transform: &Mat4, stated: f32) -> Option<(Vec3, f32)> {
+    let (min, max) = bounds?;
+    let reach = (max - min).length() * 0.5 * widest(transform);
+    Some((
+        transform.transform_point3((min + max) * 0.5),
+        reach.max(stated),
+    ))
+}
+
 /// The most a transform stretches any one axis, which is what a radius in its own space grows by.
 /// The largest of the three rather than one of them: a placement is free to scale unevenly.
 fn widest(transform: &Mat4) -> f32 {
@@ -2972,13 +2984,11 @@ impl Scene {
     /// whatever sphere the file itself states. `None` while the model has yet to arrive, which is
     /// what keeps an unread plate on screen rather than culling it by its origin alone.
     fn sphere(&self, placement: &Placement) -> Option<(Vec3, f32)> {
-        let (min, max) = self.models[placement.model].bounds?;
-        let transform = placement.transform;
-        let reach = (max - min).length() * 0.5 * widest(&transform);
-        Some((
-            transform.transform_point3((min + max) * 0.5),
-            reach.max(placement.radius),
-        ))
+        sphere_of(
+            self.models[placement.model].bounds,
+            &placement.transform,
+            placement.radius,
+        )
     }
 
     fn decode(&mut self, at: usize, bytes: Vec<u8>, level: u8) -> Result<()> {
@@ -5316,9 +5326,32 @@ mod tests {
     /// origin does not hold it and the plate vanishes the moment the origin leaves the frustum.
     #[test]
     fn a_model_measures_the_box_its_own_geometry_fills() {
-        let held = extent([Vec3::new(10.0, 0.0, -4.0), Vec3::new(14.0, 6.0, 2.0)].into_iter());
+        // Deliberately not in order: a later point is smaller in one axis and larger in another.
+        let held = extent(
+            [
+                Vec3::new(14.0, 0.0, 2.0),
+                Vec3::new(10.0, 6.0, -4.0),
+                Vec3::new(12.0, 3.0, 0.0),
+            ]
+            .into_iter(),
+        );
         assert_eq!(held, Some((Vec3::new(10.0, 0.0, -4.0), Vec3::new(14.0, 6.0, 2.0))));
         assert_eq!(extent(std::iter::empty()), None);
+    }
+
+    /// A plate modelled away from its origin is culled by where its geometry actually is, and the
+    /// sphere never shrinks below the one the file itself states.
+    #[test]
+    fn a_placement_is_culled_by_where_its_geometry_sits() {
+        let bounds = Some((Vec3::new(10.0, 0.0, -2.0), Vec3::new(14.0, 4.0, 2.0)));
+        let (center, radius) = sphere_of(bounds, &Mat4::IDENTITY, 0.0).expect("a sphere");
+        assert_eq!(center, Vec3::new(12.0, 2.0, 0.0));
+        assert!((radius - (Vec3::new(4.0, 4.0, 4.0)).length() * 0.5).abs() < 1e-5);
+        // The file's own sphere is a floor, never a ceiling.
+        let (_, wider) = sphere_of(bounds, &Mat4::IDENTITY, 99.0).expect("a sphere");
+        assert_eq!(wider, 99.0);
+        // A model that has not arrived is not culled at all.
+        assert!(sphere_of(None, &Mat4::IDENTITY, 5.0).is_none());
     }
 
     /// A radius in a model's own space grows by whichever axis its placement stretches most, not
