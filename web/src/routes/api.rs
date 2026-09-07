@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::Write,
+    io::{Read, Write},
     sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant},
 };
@@ -20,7 +20,7 @@ use actix_web::{
     web::{self, Bytes},
 };
 use actix_web_lab::header::{CacheControl, CacheDirective};
-use flate2::{Compression, write::GzEncoder};
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use xiv_core::file::{slug::Slug, version::GameVersion};
@@ -787,11 +787,11 @@ async fn build_songs(sheet: &str) -> anyhow::Result<String> {
 }
 
 /// BNpc base -> crowdsourced name ids, distilled from FFXIVGachaSpreadsheet's pairing dumps.
-const BNPC_DATA: &str =
-    "https://raw.githubusercontent.com/Infiziert90/FFXIVGachaSpreadsheet/master/website/static/data/";
+const BNPC_DATA: &str = "https://raw.githubusercontent.com/Infiziert90/FFXIVGachaSpreadsheet/master/website/static/data/";
 const BNPC_TTL: Duration = Duration::from_secs(12 * 60 * 60);
-type BnpcCache = Mutex<Option<(Instant, Arc<String>)>>;
-static BNPC_CACHE: LazyLock<BnpcCache> = LazyLock::new(|| Mutex::new(None));
+/// Held gzipped, which is what nearly every caller wants and a fraction of the size. Freshness is
+/// `prewarm_bnpc`'s job, so a stale map outlives an upstream outage rather than 500ing behind it.
+static BNPC_CACHE: LazyLock<Mutex<Option<Bytes>>> = LazyLock::new(|| Mutex::new(None));
 
 #[derive(Deserialize)]
 struct BnpcSimple {
@@ -818,30 +818,36 @@ struct BnpcPairings {
 }
 
 #[get("/bnpc/")]
-async fn get_bnpc() -> Result<HttpResponse> {
-    let cached = BNPC_CACHE
-        .lock()
-        .unwrap()
-        .as_ref()
-        .filter(|(fetched, _)| fetched.elapsed() < BNPC_TTL)
-        .map(|(_, json)| json.clone());
-
-    let json = match cached {
-        Some(json) => json,
+async fn get_bnpc(request: HttpRequest) -> Result<HttpResponse> {
+    let held = BNPC_CACHE.lock().unwrap().clone();
+    let body = match held {
+        Some(body) => body,
         None => {
-            let json = Arc::new(build_bnpc().await.map_err(ErrorInternalServerError)?);
-            *BNPC_CACHE.lock().unwrap() = Some((Instant::now(), json.clone()));
-            json
+            let body = build_bnpc().await.map_err(ErrorInternalServerError)?;
+            *BNPC_CACHE.lock().unwrap() = Some(body.clone());
+            body
         }
     };
 
-    Ok(HttpResponse::Ok()
+    let mut response = HttpResponse::Ok();
+    response
+        .content_type("application/json")
         .insert_header(CacheControl(vec![
             CacheDirective::Public,
-            CacheDirective::MaxAge(60 * 60 * 12),
+            CacheDirective::MaxAge(BNPC_TTL.as_secs() as u32),
         ]))
-        .content_type("application/json")
-        .body(json.as_ref().clone()))
+        .insert_header((header::VARY, "Accept-Encoding"));
+
+    if accepts(&request, "gzip") {
+        return Ok(response
+            .insert_header((header::CONTENT_ENCODING, "gzip"))
+            .body(body));
+    }
+    let mut plain = Vec::new();
+    GzDecoder::new(&body[..])
+        .read_to_end(&mut plain)
+        .map_err(ErrorInternalServerError)?;
+    Ok(response.body(plain))
 }
 
 /// Keeps the pairing map hot, so the first client is not the one that waits for the upstream dumps.
@@ -849,7 +855,7 @@ pub fn prewarm_bnpc() {
     tokio::spawn(async {
         loop {
             match build_bnpc().await {
-                Ok(json) => *BNPC_CACHE.lock().unwrap() = Some((Instant::now(), Arc::new(json))),
+                Ok(body) => *BNPC_CACHE.lock().unwrap() = Some(body),
                 Err(error) => log::warn!("Could not prewarm BNpc names: {error}"),
             }
             tokio::time::sleep(BNPC_TTL).await;
@@ -857,7 +863,7 @@ pub fn prewarm_bnpc() {
     });
 }
 
-async fn build_bnpc() -> anyhow::Result<String> {
+async fn build_bnpc() -> anyhow::Result<Bytes> {
     let client = reqwest::Client::new();
     let simple: Vec<BnpcSimple> = client
         .get(format!("{BNPC_DATA}BnpcPairsSimple.json"))
@@ -874,7 +880,10 @@ async fn build_bnpc() -> anyhow::Result<String> {
         .json()
         .await?;
 
-    distil(simple, seen)
+    let json = distil(simple, seen)?;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(json.as_bytes())?;
+    Ok(Bytes::from(encoder.finish()?))
 }
 
 fn distil(simple: Vec<BnpcSimple>, seen: BnpcPairings) -> anyhow::Result<String> {
@@ -949,13 +958,20 @@ mod tests {
     use super::*;
     use crate::{config::Report, paths::PathIndex};
 
-
     #[actix_web::test]
     async fn a_base_takes_the_name_it_was_sighted_under_most() {
-        let simple = vec![BnpcSimple {
-            base: 7,
-            names: vec![20, 9, 44],
-        }];
+        let simple = vec![
+            BnpcSimple {
+                base: 7,
+                names: vec![20, 9, 44],
+            },
+            // Shares name 20 with base 7, and far more sightings of it, so a count keyed by name
+            // alone would drag base 7's ranking around.
+            BnpcSimple {
+                base: 8,
+                names: vec![20],
+            },
+        ];
         let seen = BnpcPairings {
             pairings: HashMap::from([
                 (
@@ -974,11 +990,19 @@ mod tests {
                         records: 100,
                     },
                 ),
+                (
+                    "c".to_owned(),
+                    BnpcSighting {
+                        base: 8,
+                        name: 20,
+                        records: 500,
+                    },
+                ),
             ]),
         };
 
         // 44 was never sighted, so it sorts behind both.
-        assert_eq!(distil(simple, seen).unwrap(), r#"{"7":[9,20,44]}"#);
+        assert_eq!(distil(simple, seen).unwrap(), r#"{"7":[9,20,44],"8":[20]}"#);
     }
 
     fn collector() -> web::Data<Collector> {
