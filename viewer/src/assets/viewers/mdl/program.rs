@@ -1859,6 +1859,13 @@ pub struct WindLayer {
     pub wavelength: f32,
 }
 
+/// How far through its cycle a swaying object stands, which is also the clock `bguvscroll` scrolls a
+/// surface by: `TEXCOORD3 = m_WavingAnimTime * g_UVScrollTime + TEXCOORD`, two UV pairs at a rate
+/// each. The engine accumulates and **wraps at `2pi`** rather than letting the phase run away.
+pub fn waving_phase(clock: f32, offset: f32) -> f32 {
+    (clock * WAVING_RATE + offset).rem_euclid(std::f32::consts::TAU)
+}
+
 /// Radians of phase one sway runs a second. Read off `ffxiv_dx11.exe`: the bg renderer accumulates
 /// `frame time * rate` into the phase every frame and wraps it at `2pi`, and `rate` is a field of the
 /// environment manager holding a flat `1.0`. A scene can state its own, and which slot of the level
@@ -4046,7 +4053,10 @@ impl Buffer {
                     let (x, z) = (instance.transform.w_axis.x, instance.transform.w_axis.z);
                     (x * 0.37 + z * 0.61).rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU
                 });
-            put(at, "m_WavingAnimTime", &[scene.clock * WAVING_RATE + offset]);
+            // Wrapped where the engine wraps it. A sway would not care - a sine is periodic - but
+            // this lane is also the clock `bguvscroll` scrolls a surface by, and there an unwrapped
+            // phase walks the coordinate away without bound instead of cycling.
+            put(at, "m_WavingAnimTime", &[waving_phase(scene.clock, offset)]);
             put(at, "m_WavingAnimNoize", &[(offset / std::f32::consts::TAU).fract()]);
             // The blend is what carries the colour: the shading lerps from the material's own
             // emissive toward this one by it, so a colour written with the blend at nought never
@@ -4399,6 +4409,22 @@ mod test {
         assert!(super::POST_VERTEX.contains("gl_Position = a_position;"));
         // The sun still hands a nought-to-one coordinate, which is what it samples sGeometry with.
         assert!(super::SUN_VERTEX.contains("a_position.xy * 0.5 + 0.5"));
+    }
+
+    /// The engine accumulates the sway phase and wraps it at `2pi`. A sine would not care, but the
+    /// same lane is the clock `bguvscroll` scrolls by, and an unwrapped phase walks that coordinate
+    /// away without bound instead of cycling.
+    #[test]
+    fn the_sway_phase_wraps_where_the_engine_wraps_it() {
+        use super::waving_phase;
+        let tau = std::f32::consts::TAU;
+        assert!((waving_phase(0.0, 0.0)).abs() < 1e-6);
+        assert!((waving_phase(1.0, 0.0) - 1.0).abs() < 1e-6);
+        // A clock long past one turn comes back inside it rather than running on.
+        let held = waving_phase(1000.0, 0.0);
+        assert!((0.0..tau).contains(&held), "{held} is outside one turn");
+        // The offset is carried in and wrapped with it.
+        assert!((0.0..tau).contains(&waving_phase(1000.0, tau * 0.75)));
     }
 
     /// A line's pass reads this lane as the reciprocal of its own length. Left at a spot's `inner`
