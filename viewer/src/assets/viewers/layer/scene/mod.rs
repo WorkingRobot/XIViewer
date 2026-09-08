@@ -3664,7 +3664,7 @@ impl Scene {
             self.exposure = self.measure();
         }
         if self.sunlight.is_none() {
-            self.sunlight = self.effect(program::SUN, program::POST_VERTEX);
+            self.sunlight = self.effect(program::SUN, program::SUN_VERTEX);
         }
         if self.moonlight.is_none() {
             self.moonlight = self.effect(program::MOON, program::MOON_VERTEX);

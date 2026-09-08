@@ -754,6 +754,23 @@ void main() {
 }
 ";
 
+/// The sun's own. It covers the frame the way a post pass does, but stands at the **far plane** so a
+/// depth test keeps it behind everything already drawn rather than over the terrain in front of it.
+/// It cannot borrow the sky's: `Sun.shcd` reads `TEXCOORD` as a nought-to-one screen coordinate to
+/// sample `sGeometry` with, where the sky's hands clip space instead.
+pub const SUN_VERTEX: &str = "\
+#version 300 es
+
+layout(location = 0) in vec4 a_position;
+
+out vec2 TEXCOORD;
+
+void main() {
+\tTEXCOORD = a_position.xy * 0.5 + 0.5;
+\tgl_Position = vec4(a_position.xy, 1.0, 1.0);
+}
+";
+
 /// The sky's own, which hands the fragment where it stands in clip space rather than a texture
 /// coordinate: the pass unprojects that to find which way the pixel looks. Held at the far plane, so
 /// a depth test keeps it behind everything already drawn rather than over it.
@@ -4362,6 +4379,27 @@ mod test {
     use std::io::Cursor;
 
     use glam::{Mat3, Mat4, Vec2, Vec3, Vec4};
+
+    /// Every pass that draws the sky, the sun, the moon or the stars stands at the far plane, so a
+    /// depth test keeps it behind the terrain rather than over it. The sun read the ordinary post
+    /// quad, which sits at the near plane and passes `LEQUAL` against everything.
+    #[test]
+    fn every_celestial_pass_stands_at_the_far_plane() {
+        for (name, source) in [
+            ("sun", super::SUN_VERTEX),
+            ("sky", super::SKY_VERTEX),
+            ("moon", super::MOON_VERTEX),
+        ] {
+            assert!(
+                source.contains("1.0, 1.0);"),
+                "{name} does not hold its quad at the far plane"
+            );
+        }
+        // And the ordinary post quad deliberately does not: it is drawn with no depth test.
+        assert!(super::POST_VERTEX.contains("gl_Position = a_position;"));
+        // The sun still hands a nought-to-one coordinate, which is what it samples sGeometry with.
+        assert!(super::SUN_VERTEX.contains("a_position.xy * 0.5 + 0.5"));
+    }
 
     /// A line's pass reads this lane as the reciprocal of its own length. Left at a spot's `inner`
     /// it is nought, and `saturate(dot(...) * 0)` collapses the whole segment onto one end.
