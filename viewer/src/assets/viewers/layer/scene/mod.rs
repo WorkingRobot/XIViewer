@@ -1146,17 +1146,16 @@ fn sphere_of(bounds: Option<(Vec3, Vec3)>, transform: &Mat4) -> Option<(Vec3, f3
     ))
 }
 
-/// The axis a light throws along, in world space, unnormalised so its own length comes with it.
+/// How long a line light runs, which its placement states by scaling **x** and no other axis.
+/// Measured over 136,858 placed lights: a point is uniformly scaled 86,169 times in 86,233 and a
+/// spot 31,242 in 31,249, while a line is scaled along x alone 16,374 times in 18,233, at values
+/// like `(25, 1, 1)`. So the scale is a length handle rather than a direction.
 ///
-/// A line runs along its placement's **x** and every other kind throws along its **z**. Measured
-/// over 136,858 placed lights, that is what the scale says: a point is uniformly scaled 86,169 times
-/// in 86,233 and a spot 31,242 in 31,249, while a line is scaled along x alone 16,374 times in
-/// 18,233, at values like `(25, 1, 1)`. So the length is in that axis and nowhere else.
-fn thrown(kind: program::LampKind, placement: &Mat4) -> Vec3 {
-    match kind {
-        program::LampKind::Line => placement.transform_vector3(Vec3::X),
-        _ => placement.transform_vector3(Vec3::Z),
-    }
+/// It is **not** the axis the segment runs along. In `n5f1`, where the lamps read horizontal, every
+/// line light's local x points straight up (`|x.y| = 1.00`) and its local z lies flat
+/// (`|z.y| = 0.00`), so running the segment along the scaled axis stands every one of them on end.
+fn stretched(placement: &Mat4) -> f32 {
+    placement.transform_vector3(Vec3::X).length()
 }
 
 /// The most a transform stretches any one axis, which is what a radius in its own space grows by.
@@ -1797,9 +1796,11 @@ impl Scene {
                                 falloff: falloff(light.attenuation()),
                                 color,
                                 kind,
-                                direction: thrown(kind, &here).normalize_or_zero(),
+                                // Every kind throws along its own z, a line included: its length is
+                                // a magnitude the placement scales x by, not an axis of its own.
+                                direction: here.transform_vector3(Vec3::Z).normalize_or_zero(),
                                 length: match kind {
-                                    program::LampKind::Line => thrown(kind, &here).length(),
+                                    program::LampKind::Line => stretched(&here),
                                     _ => 0.0,
                                 },
                                 inner: half(light.spot_angle()),
@@ -5447,17 +5448,16 @@ mod tests {
         assert!(!festive(12, 1, &[(13, 1)]));
     }
 
-    /// A line runs along its placement's x and everything else along its z, and the placement's
-    /// own scale in that axis is the line's length.
+    /// The placement's x scale is the line's length, and it is a magnitude rather than the axis the
+    /// segment runs along: a lamp whose local x points up still lies flat along its own z.
     #[test]
-    fn a_line_runs_along_the_axis_its_placement_scales() {
-        let held = Mat4::from_scale(Vec3::new(25.0, 1.0, 1.0));
-        let along = thrown(program::LampKind::Line, &held);
-        assert_eq!(along, Vec3::new(25.0, 0.0, 0.0));
-        assert_eq!(along.length(), 25.0);
-        // A spot throws along z whatever its placement scales.
-        assert_eq!(thrown(program::LampKind::Spot, &held), Vec3::Z);
-        assert_eq!(thrown(program::LampKind::Point, &held), Vec3::Z);
+    fn a_line_takes_its_length_from_the_axis_its_placement_scales() {
+        assert_eq!(stretched(&Mat4::from_scale(Vec3::new(25.0, 1.0, 1.0))), 25.0);
+        assert_eq!(stretched(&Mat4::IDENTITY), 1.0);
+        // Turning the placement does not change how long the lamp is.
+        let turned = Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2)
+            * Mat4::from_scale(Vec3::new(25.0, 1.0, 1.0));
+        assert!((stretched(&turned) - 25.0).abs() < 1e-4);
     }
 
     /// A radius in a model's own space grows by whichever axis its placement stretches most, not
