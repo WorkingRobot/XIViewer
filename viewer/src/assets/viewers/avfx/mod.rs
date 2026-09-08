@@ -1675,6 +1675,25 @@ mod tests {
         effect.drawn(&state)
     }
 
+    /// A run whose span outlasts the loop period is still going when its own start comes round
+    /// again. Starting a second copy of it stacks one run on another and hands the new one an age of
+    /// nought, which walks a long emitter track - a lamp's sweep - back to where it began every
+    /// period instead of carrying on through it.
+    #[test]
+    fn a_cycle_does_not_start_a_run_that_has_not_ended() {
+        // One particle a frame, immortal, over a span far longer than the period.
+        let effect = &playing(&[life(-1.0)], (1, 1000)).effect;
+        let count = |frame: i32, period: Option<i32>| {
+            let mut state = sim::State::default();
+            effect.seek_cycling(&mut state, frame, period);
+            effect.drawn(&state).len()
+        };
+        // Whatever the period, the run is the same single run it would be without one.
+        let whole = count(30, None);
+        assert_eq!(count(30, Some(10)), whole);
+        assert_eq!(count(30, Some(7)), whole);
+    }
+
     #[test]
     fn an_emitter_runs_over_the_span_its_timeline_gives_it() {
         let effect = &playing(&[life(2.0)], (3, 6)).effect;
