@@ -1694,6 +1694,22 @@ mod tests {
         assert_eq!(count(30, Some(7)), whole);
     }
 
+    /// A run short enough to have ended does start again on its cycle: that is what looping is, and
+    /// it is the half the guard above must not take away.
+    #[test]
+    fn a_cycle_starts_a_run_that_has_ended() {
+        // Three frames of an immortal particle, then nothing, over a ten-frame cycle.
+        let effect = &playing(&[life(-1.0)], (1, 3)).effect;
+        let count = |frame: i32, period: Option<i32>| {
+            let mut state = sim::State::default();
+            effect.seek_cycling(&mut state, frame, period);
+            effect.drawn(&state).len()
+        };
+        let once = count(25, None);
+        // Frames 1, 11 and 21 each start it again, so a cycled run has fired three times over.
+        assert_eq!(count(25, Some(10)), once * 3);
+    }
+
     #[test]
     fn an_emitter_runs_over_the_span_its_timeline_gives_it() {
         let effect = &playing(&[life(2.0)], (3, 6)).effect;
