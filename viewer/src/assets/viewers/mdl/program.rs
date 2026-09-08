@@ -4423,7 +4423,10 @@ mod test {
         // A clock long past one turn comes back inside it rather than running on.
         let held = waving_phase(1000.0, 0.0);
         assert!((0.0..tau).contains(&held), "{held} is outside one turn");
-        // The offset is carried in and wrapped with it.
+        // The offset is where in its cycle the object starts, so it shifts the phase rather than
+        // being dropped: a stand of one plant leans as one because every blade carries the same one.
+        assert!((waving_phase(0.0, tau * 0.25) - tau * 0.25).abs() < 1e-4);
+        assert!((waving_phase(1.0, tau * 0.25) - (1.0 + tau * 0.25)).abs() < 1e-4);
         assert!((0.0..tau).contains(&waving_phase(1000.0, tau * 0.75)));
     }
 
