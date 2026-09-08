@@ -220,6 +220,8 @@ struct Layer {
     /// What the file says about whether it draws, which is what the picker starts at.
     visible: bool,
     festival: u16,
+    /// Which phase of that festival, where it states one. Nought stands for every phase of it.
+    phase: u16,
     shown: bool,
     placements: usize,
 }
@@ -724,6 +726,18 @@ struct Placing {
     layer: usize,
 }
 
+/// Whether a festival's own layer stands, against the slots a place is standing under. A layer
+/// keyed to no festival always stands; one keyed to a phase stands only in that phase, and a slot
+/// naming the festival with no phase of its own stands for every phase of it.
+fn festive(festival: u16, phase: u16, under: &[(u16, u16)]) -> bool {
+    if festival == 0 {
+        return true;
+    }
+    under
+        .iter()
+        .any(|(id, held)| *id == festival && (*held == 0 || *held == phase))
+}
+
 /// One grid's blades at one auto layer, as the scene stood them up.
 struct Turf {
     origin: Vec3,
@@ -859,6 +873,9 @@ pub struct Scene {
     /// under. A shared group's own placements carry the id it was placed under as well, so hiding
     /// one takes the whole subtree with it.
     unplaced: BTreeSet<u32>,
+    /// The festivals the place is standing under, each an id and a phase. Empty is the everyday
+    /// zone, which is what a layer keyed to no festival draws under.
+    festivals: Vec<(u16, u16)>,
     /// Whether the last frame drawn was driven, for the side panel to grey its own camera controls
     /// against: [`Self::drive`] itself is forgotten the instant a frame reads it.
     driving: bool,
@@ -1323,6 +1340,7 @@ impl Scene {
             renderer: gpu::Renderer::new(),
             cast: Vec::new(),
             unplaced: BTreeSet::new(),
+            festivals: Vec::new(),
             placed: Vec::new(),
             casts: Vec::new(),
             motions: Vec::new(),
@@ -1395,6 +1413,20 @@ impl Scene {
 
     /// Which of the props a host placed are out of the frame, replacing whatever was out before.
     /// Called every frame the way [`Self::stand`] is.
+    /// Stands the place under a set of festivals, showing every layer one of them keys and hiding
+    /// the layers of the festivals it is no longer under. A layer keyed to no festival is left as
+    /// the user has it: it draws whatever is running.
+    fn stand_under(&mut self, festivals: Vec<(u16, u16)>) {
+        self.festivals = festivals;
+        for layer in &mut self.layers {
+            if layer.festival != 0 {
+                layer.shown =
+                    layer.visible && festive(layer.festival, layer.phase, &self.festivals);
+            }
+        }
+        self.dirty = true;
+    }
+
     pub fn hide(&mut self, unplaced: BTreeSet<u32>) {
         if self.unplaced != unplaced {
             self.unplaced = unplaced;
@@ -1420,6 +1452,7 @@ impl Scene {
             origin: None,
             visible: true,
             festival: 0,
+            phase: 0,
             shown: true,
             placements: 0,
         });
@@ -1638,6 +1671,7 @@ impl Scene {
                             origin: origin.map(str::to_owned),
                             visible: layer.visible(),
                             festival: layer.festival_id(),
+                            phase: layer.festival_phase_id(),
                             shown: layer.visible() && layer.festival_id() == 0,
                             placements: 0,
                         });
@@ -1888,6 +1922,7 @@ impl Scene {
             origin: Some(path.to_owned()),
             visible: true,
             festival: 0,
+            phase: 0,
             shown: true,
             placements: terrain.plates().len(),
         });
@@ -1977,6 +2012,7 @@ impl Scene {
             origin: Some(path.to_owned()),
             visible: true,
             festival: 0,
+            phase: 0,
             shown: true,
             placements: 0,
         });
@@ -4812,6 +4848,9 @@ impl Scene {
         if let Some(time) = held.time {
             self.ambient.time = time;
         }
+        if !held.festivals.is_empty() {
+            self.stand_under(held.festivals.clone());
+        }
         if let Some(id) = held.weather
             && !self.ambient.stand_in_weather(id)
         {
@@ -5279,6 +5318,50 @@ impl Scene {
                     changed = true;
                 }
             });
+            // Only where the zone keys a layer to one at all: most state none, and an empty control
+            // would sit under every layer list in the game.
+            let keyed: BTreeSet<(u16, u16)> = self
+                .layers
+                .iter()
+                .filter(|layer| layer.festival != 0)
+                .map(|layer| (layer.festival, layer.phase))
+                .collect();
+            if !keyed.is_empty() {
+                ui.add_space(4.0);
+                ui.label(RichText::new("Festival").strong());
+                let mut wanted = self.festivals.clone();
+                ui.horizontal_wrapped(|ui| {
+                    if ui.selectable_label(wanted.is_empty(), "None").clicked() {
+                        wanted.clear();
+                    }
+                    for (festival, phase) in &keyed {
+                        let held = (*festival, *phase);
+                        let name = match phase {
+                            0 => format!("{festival}"),
+                            held => format!("{festival}.{held}"),
+                        };
+                        if ui
+                            .selectable_label(wanted.contains(&held), name)
+                            .on_hover_text(match phase {
+                                0 => format!("festival {festival}, every phase"),
+                                held => format!("festival {festival}, phase {held}"),
+                            })
+                            .clicked()
+                        {
+                            match wanted.iter().position(|at| *at == held) {
+                                Some(at) => {
+                                    wanted.remove(at);
+                                }
+                                None => wanted.push(held),
+                            }
+                        }
+                    }
+                });
+                if wanted != self.festivals {
+                    self.stand_under(wanted);
+                    changed = true;
+                }
+            }
             ui.add_space(4.0);
             // Truncated rather than run on: a zone's layer names are unbounded, and one long name
             // in an unwrapped checkbox pins the whole panel at its own width forever.
@@ -5286,7 +5369,10 @@ impl Scene {
             for layer in &mut self.layers {
                 let mut label = format!("{} ({})", layer.name, layer.placements);
                 if layer.festival != 0 {
-                    label.push_str(&format!("  festival {}", layer.festival));
+                    label.push_str(&match layer.phase {
+                        0 => format!("  festival {}", layer.festival),
+                        held => format!("  festival {}.{held}", layer.festival),
+                    });
                 }
                 let mut hover = label.clone();
                 hover.push('\n');
@@ -5342,6 +5428,23 @@ mod tests {
         assert!((wider - radius * 3.0).abs() < 1e-4);
         // A model that has not arrived is not culled at all.
         assert!(sphere_of(None, &Mat4::IDENTITY).is_none());
+    }
+
+    /// A layer keyed to no festival always stands. One keyed to a phase stands only in that phase,
+    /// and a slot naming the festival without a phase of its own stands for every phase of it.
+    #[test]
+    fn a_festival_layer_stands_only_while_its_own_festival_runs() {
+        assert!(festive(0, 0, &[]));
+        assert!(festive(0, 0, &[(12, 1)]));
+        assert!(!festive(12, 0, &[]));
+        assert!(festive(12, 0, &[(12, 0)]));
+        // A phase the slot does not name is not the phase the layer wants.
+        assert!(!festive(12, 2, &[(12, 1)]));
+        assert!(festive(12, 2, &[(12, 2)]));
+        // A slot with no phase of its own stands for every phase.
+        assert!(festive(12, 7, &[(12, 0)]));
+        // Another festival running is not this one.
+        assert!(!festive(12, 1, &[(13, 1)]));
     }
 
     /// A line runs along its placement's x and everything else along its z, and the placement's
