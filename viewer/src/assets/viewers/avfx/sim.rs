@@ -1141,13 +1141,11 @@ fn mesh(model: &Geometry) -> Mesh {
 }
 
 /// One emitter running: a timeline started it, or a parent emitter did.
-/// What a running emitter states for its run where it is not one of the effect's own: one emitter
-/// spawns another, and nothing about a cycle should hold that one back.
-const NESTED: usize = usize::MAX;
-
 struct Running {
     /// Which of the effect's own runs this is, so a cycle does not start one that has not ended.
-    run: usize,
+    /// `None` where it is not one of them at all: an emitter one of them spawned, which nothing
+    /// about a cycle should hold back.
+    run: Option<usize>,
     def: usize,
     born: i32,
     until: i32,
@@ -1342,10 +1340,10 @@ impl Effect {
             // where it began every period instead of carrying on through it.
             if run.start == cycle
                 && state.running.len() < EMITTERS
-                && !state.running.iter().any(|held| held.run == at)
+                && !state.running.iter().any(|held| held.run == Some(at))
             {
                 state.running.push(Running {
-                    run: at,
+                    run: Some(at),
                     def: run.emitter,
                     born: frame,
                     until: frame + (run.until - run.start),
@@ -1412,7 +1410,7 @@ impl Effect {
                         break;
                     }
                     spawned.push(Running {
-                        run: NESTED,
+                        run: None,
                         def: spawn.target,
                         born: frame,
                         until: self.emitters[spawn.target]
