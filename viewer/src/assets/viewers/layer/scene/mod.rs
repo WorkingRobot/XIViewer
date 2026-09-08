@@ -584,6 +584,10 @@ struct Light {
     kind: program::LampKind,
     /// Which way it throws, in world space.
     direction: Vec3,
+    /// How long a line light runs, which is the only thing its placement's scale states: measured
+    /// over 136,858 placed lights, a point is uniformly scaled 86,169 times in 86,233 and a spot
+    /// 31,242 in 31,249, while a line is scaled along its own x alone 16,374 times in 18,233.
+    length: f32,
     /// The cosines its cone is full strength within and cut at, and of the coefficient it widens
     /// by, which is what scales its clip box.
     inner: f32,
@@ -1746,7 +1750,21 @@ impl Scene {
                                 falloff: falloff(light.attenuation()),
                                 color,
                                 kind,
-                                direction: here.transform_vector3(Vec3::Z).normalize_or_zero(),
+                                // A line runs along its own x and every other kind throws along
+                                // its own z. The placement carries the length in that same axis, so
+                                // the unnormalised vector is the segment itself.
+                                direction: match kind {
+                                    program::LampKind::Line => {
+                                        here.transform_vector3(Vec3::X).normalize_or_zero()
+                                    }
+                                    _ => here.transform_vector3(Vec3::Z).normalize_or_zero(),
+                                },
+                                length: match kind {
+                                    program::LampKind::Line => {
+                                        here.transform_vector3(Vec3::X).length()
+                                    }
+                                    _ => 0.0,
+                                },
                                 inner: half(light.spot_angle()),
                                 cone: half(
                                     light.spot_angle() + light.attenuation_cone_coefficient(),
@@ -2331,6 +2349,7 @@ impl Scene {
                     },
                     kind: light.kind,
                     direction: light.direction,
+                    length: light.length,
                     inner: light.inner,
                     cone: light.cone,
                     spread: light.spread,

@@ -1074,6 +1074,28 @@ pub enum LampKind {
 /// One placed light, as `g_LightParam` reads it. The box is the one a zone's `.lcb` clips the light
 /// against: stated in the light's own space, in the same units the placement stands in, so it cuts
 /// the volume the light is drawn as without changing how far the light itself carries.
+/// What a lamp's pass reads where a spot keeps the cosine it is at full strength within. A line has
+/// no cone and reads the same lane as **the reciprocal of its own length**: its pass walks
+/// `direction * saturate(dot(direction, pixel - position) * lane)` to the nearest point on the
+/// segment, so nought there collapses the whole line onto one end of itself.
+pub fn full_within(kind: LampKind, inner: f32, length: f32) -> f32 {
+    match kind {
+        LampKind::Line => 1.0 / length.max(0.001),
+        _ => inner,
+    }
+}
+
+/// Where a line's segment starts, relative to the placement's own origin. The pass saturates the
+/// projection into nought-to-one, so the segment runs from the position it is handed along the
+/// direction; a placement states the line about its middle, so it starts half a length back.
+/// Nothing else has a segment, and reads the position as the point it throws from.
+pub fn runs_from(kind: LampKind, direction: Vec3, length: f32) -> Vec3 {
+    match kind {
+        LampKind::Line => direction * length * -0.5,
+        _ => Vec3::ZERO,
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Lamp {
     /// Takes the light's own space into the world, without scaling it.
@@ -1097,6 +1119,8 @@ pub struct Lamp {
     /// The cosine a spot is at full strength within. Nothing but a spot reads it, and a line reads
     /// the same lane as the reciprocal of its own length instead.
     pub inner: f32,
+    /// How long a line light runs. Nought for every other kind, which have no length to state.
+    pub length: f32,
     /// The cosine a spot's cone is cut at, which its own shader compares the direction to a pixel
     /// against. Nothing but a spot reads it.
     pub cone: f32,
@@ -1116,6 +1140,7 @@ impl Default for Lamp {
             range: 1.0,
             color: Vec3::ONE,
             kind: LampKind::Point,
+            length: 0.0,
             direction: Vec3::Z,
             inner: 0.0,
             cone: 0.0,
@@ -3895,8 +3920,9 @@ impl Buffer {
         // falloff is the ramp over the distance with nothing scaling it up. `y` is the cosine that
         // package discards a spot against outright.
         let reach = lamp.reach.max(0.001);
+        let held = full_within(lamp.kind, lamp.inner, lamp.length);
         let (inner, cone) = match pass {
-            Pass::Lamp => (lamp.inner, lamp.cone),
+            Pass::Lamp => (held, lamp.cone),
             _ => (0.0, 0.0),
         };
         put(
@@ -3917,10 +3943,11 @@ impl Buffer {
         // where the clamp alone would have put it.
         let volume = lamp.placement * Mat4::from_scale(Vec3::splat(reach));
         let (min, max) = (lamp.min / reach, lamp.max / reach);
+        let from = runs_from(lamp.kind, lamp.direction, lamp.length);
         put(
             light,
             "m_Position",
-            (view * lamp.placement * Vec3::ZERO.extend(1.0))
+            (view * (lamp.placement * Vec3::ZERO.extend(1.0) + from.extend(0.0)))
                 .to_array()
                 .to_vec(),
         );
@@ -4335,6 +4362,31 @@ mod test {
     use std::io::Cursor;
 
     use glam::{Mat3, Mat4, Vec2, Vec3, Vec4};
+
+    /// A line's pass reads this lane as the reciprocal of its own length. Left at a spot's `inner`
+    /// it is nought, and `saturate(dot(...) * 0)` collapses the whole segment onto one end.
+    #[test]
+    fn a_line_states_the_reciprocal_of_its_length_where_a_spot_states_its_cone() {
+        use super::{LampKind, full_within};
+        assert_eq!(full_within(LampKind::Line, 0.0, 25.0), 1.0 / 25.0);
+        // Every other kind keeps the cone it was given.
+        assert_eq!(full_within(LampKind::Spot, 0.7, 25.0), 0.7);
+        assert_eq!(full_within(LampKind::Point, 0.0, 25.0), 0.0);
+        // A line of no length would divide by nought.
+        assert!(full_within(LampKind::Line, 0.0, 0.0).is_finite());
+    }
+
+    /// The segment runs from the position it is handed, so a line stated about its middle has to
+    /// start half a length back or it lights only the half in front of its origin.
+    #[test]
+    fn a_line_starts_half_its_length_before_its_own_origin() {
+        use super::{LampKind, runs_from};
+        let along = Vec3::X;
+        assert_eq!(runs_from(LampKind::Line, along, 10.0), Vec3::new(-5.0, 0.0, 0.0));
+        // Nothing else has a segment; its position is the point it throws from.
+        assert_eq!(runs_from(LampKind::Spot, along, 10.0), Vec3::ZERO);
+        assert_eq!(runs_from(LampKind::Point, along, 10.0), Vec3::ZERO);
+    }
     use ironworks::file::{File, spm::ShaderParameters};
 
     use super::{
