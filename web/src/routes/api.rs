@@ -482,7 +482,12 @@ async fn get_versions_repo(
 
 async fn serve_versions(data: &MessageQueue, target: Target) -> Result<HttpResponse> {
     match data.versions_for(target).await {
-        Some(info) => Ok(HttpResponse::Ok().json(info)),
+        Some(mut info) => {
+            if let Target::Region(region) = target {
+                crate::data::label_versions(&mut info, region).await;
+            }
+            Ok(HttpResponse::Ok().json(info))
+        }
         None => Err(ErrorBadRequest("No version info available")),
     }
 }

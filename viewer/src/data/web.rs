@@ -22,6 +22,8 @@ pub struct WebFileProvider(Url);
 pub struct VersionInfo {
     pub latest: GameVersion,
     pub versions: Vec<GameVersion>,
+    #[serde(default)]
+    pub names: std::collections::BTreeMap<GameVersion, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

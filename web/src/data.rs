@@ -32,6 +32,9 @@ use crate::{blocking_stream::BlockingReader, config::AssetCache, smart_bufreader
 pub struct VersionInfo {
     pub latest: GameVersion,
     pub versions: Vec<GameVersion>,
+    /// Human-readable name per version, where the patch index records one.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub names: std::collections::BTreeMap<GameVersion, String>,
 }
 
 impl From<SlugData> for VersionInfo {
@@ -39,6 +42,43 @@ impl From<SlugData> for VersionInfo {
         Self {
             latest: value.latest_version,
             versions: value.versions,
+            names: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+/// Attach the patch index's human names to a version list. A region without metadata, or a
+/// version the index does not name, is left unlabelled rather than guessed at.
+pub async fn label_versions(info: &mut VersionInfo, region: Region) {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent("FFXIV PATCH CLIENT")
+            .build()
+            .unwrap_or_default()
+    });
+    let indexed = match region {
+        Region::Global => xiv_core::index::Region::Global,
+        Region::Korea => xiv_core::index::Region::Korea,
+        Region::China => xiv_core::index::Region::China,
+        Region::Taiwan => xiv_core::index::Region::Taiwan,
+    };
+    let metadata = match xiv_core::index::fetch_metadata(
+        client,
+        xiv_core::index::DEFAULT_INDEX,
+        indexed,
+    )
+    .await
+    {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            log::debug!("no metadata for {region}: {error}");
+            return;
+        }
+    };
+    for version in std::iter::once(&info.latest).chain(info.versions.iter()) {
+        if let Some(label) = metadata.label(version) {
+            info.names.insert(version.clone(), label);
         }
     }
 }
@@ -312,16 +352,19 @@ pub enum Region {
     Global,
     Korea,
     China,
+    Taiwan,
 }
 
 impl Region {
-    pub const ALL: [Self; 3] = [Region::Global, Region::Korea, Region::China];
+    pub const ALL: [Self; 4] =
+        [Region::Global, Region::Korea, Region::China, Region::Taiwan];
 
     fn from_publisher(publisher: &str) -> Option<Self> {
         match publisher {
             "ffxivneo" => Some(Region::Global),
             "actoz" => Some(Region::Korea),
             "shanda" => Some(Region::China),
+            "ffxivtc" => Some(Region::Taiwan),
             _ => None,
         }
     }
@@ -333,6 +376,7 @@ impl fmt::Display for Region {
             Region::Global => "global",
             Region::Korea => "korea",
             Region::China => "china",
+            Region::Taiwan => "taiwan",
         })
     }
 }
@@ -345,6 +389,7 @@ impl FromStr for Region {
             "global" => Ok(Region::Global),
             "korea" => Ok(Region::Korea),
             "china" => Ok(Region::China),
+            "taiwan" => Ok(Region::Taiwan),
             other => bail!("unknown region {other}"),
         }
     }

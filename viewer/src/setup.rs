@@ -390,16 +390,23 @@ impl SetupWindow {
                                                     ))
                                                     .width(ui.available_width())
                                                     .show_ui(ui, |ui| {
-                                                        ui.selectable_value(
+                                                        version_row(
+                                                            ui,
                                                             version,
                                                             None,
-                                                            format!("Latest ({})", versions.latest),
+                                                            &format!(
+                                                                "Latest ({})",
+                                                                versions.latest
+                                                            ),
+                                                            versions.names.get(&versions.latest),
                                                         );
                                                         for entry in &versions.versions {
-                                                            ui.selectable_value(
+                                                            version_row(
+                                                                ui,
                                                                 version,
                                                                 Some(entry.clone()),
-                                                                entry.to_string(),
+                                                                &entry.to_string(),
+                                                                versions.names.get(entry),
                                                             );
                                                         }
                                                     });
@@ -912,5 +919,34 @@ impl SetupPromises {
             &"showDirectoryPicker".into(),
         )
         .expect("Reflect::has failed")
+    }
+}
+
+/// One row of the version picker: the version on the left, and the patch it belongs to on the
+/// right in weak text where the index names one.
+fn version_row(
+    ui: &mut egui::Ui,
+    current: &mut Option<crate::utils::GameVersion>,
+    value: Option<crate::utils::GameVersion>,
+    text: &str,
+    name: Option<&String>,
+) {
+    let Some(name) = name else {
+        ui.selectable_value(current, value, text);
+        return;
+    };
+
+    let selected = *current == value;
+    let response = ui
+        .horizontal(|ui| {
+            let response = ui.selectable_label(selected, text);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(egui::RichText::new(name).weak());
+            });
+            response
+        })
+        .inner;
+    if response.clicked() {
+        *current = value;
     }
 }
