@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -65,19 +65,19 @@ jobs:
           mv -f target/${{ matrix.platform.target }}/release/viewer${{ matrix.platform.binary-ext }} xiviewer-${{ matrix.platform.os-name }}${{ matrix.platform.binary-ext }}
 
       - name: Attest
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             xiviewer-${{ matrix.platform.os-name }}${{ matrix.platform.binary-ext }}
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: xiviewer-${{ matrix.platform.os-name }}
           path: |
             xiviewer-${{ matrix.platform.os-name }}${{ matrix.platform.binary-ext }}
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         if: github.ref_type == 'tag'
         with:
           files: |
